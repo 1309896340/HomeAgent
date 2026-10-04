@@ -5,3 +5,15 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = []
+
+[project.scripts]
+web = "web.main:main"
+
+[tool.hatch.build.targets.wheel]
+# 每新增一个 src 下的独立模块，在此追加一行即可被安装/导入
+packages = ["src/web"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
