@@ -1,0 +1,19 @@
+services:
+  qwen3-asr:
+    image: ghcr.io/scisaga/qwen3-asr-openai:latest
+    container_name: qwen3-asr
+    ports:
+      - "12301:8000"  # 宿主机端口映射到容器内8000
+    volumes:
+      - ./models:/models  # 挂载模型缓存目录
+    environment:
+      - MODEL_NAME=Qwen/Qwen3-ASR-1.7B  # 可选 1.7B 或 0.6B 版本
+      - DTYPE=bfloat16
+      - DEVICE_MAP=cuda:0
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
