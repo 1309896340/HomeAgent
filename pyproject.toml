@@ -10,8 +10,8 @@ dependencies = []
 web = "web.main:main"
 
 [tool.hatch.build.targets.wheel]
-# 每新增一个 src 下的独立模块，在此追加一行即可被安装/导入
-packages = ["src/web"]
+# 可编辑安装时把 src 加入导入路径：src 下每个文件夹自动成为可导入模块，无需登记
+dev-mode-dirs = ["src"]
 
 [build-system]
 requires = ["hatchling"]
