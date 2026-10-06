@@ -309,6 +309,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi", extra = ["standard"] },
+    { name = "httpx" },
 ]
 
 [package.dev-dependencies]
@@ -317,7 +318,10 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "fastapi", extras = ["standard"], specifier = ">=0.142.2" }]
+requires-dist = [
+    { name = "fastapi", extras = ["standard"], specifier = ">=0.142.2" },
+    { name = "httpx", specifier = ">=0.28.1" },
+]
 
 [package.metadata.requires-dev]
 dev = [{ name = "pyright", specifier = ">=1.1.414" }]

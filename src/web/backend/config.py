@@ -5,8 +5,12 @@
   ASR.BASE_URL  -> settings.asr.base_url
 """
 
+from pathlib import Path
+
 from pydantic import BaseModel
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
 class LLMSettings(BaseModel):
@@ -41,6 +45,16 @@ class Settings(BaseSettings):
 
     llm: LLMSettings = LLMSettings()
     asr: ASRSettings = ASRSettings()
+
+    @property
+    def db_dir(self) -> Path:
+        """SQLite 与上传图片的持久化目录（db/）。"""
+        return PROJECT_ROOT / "db"
+
+    @property
+    def audio_input_dir(self) -> Path:
+        """语音输入的调试缓存目录（data/audio_input/）。"""
+        return PROJECT_ROOT / "data" / "audio_input"
 
 
 settings = Settings()
