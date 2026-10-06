@@ -1,1 +1,34 @@
 @import "tailwindcss";
+
+/* GitHub Primer 风格配色（亮色） */
+@theme {
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans",
+    "PingFang SC", "Microsoft YaHei", Helvetica, Arial, sans-serif;
+
+  --color-canvas: #ffffff;
+  --color-canvas-subtle: #f6f8fa;
+  --color-canvas-inset: #eff2f5;
+
+  --color-line: #d1d9e0;
+  --color-line-muted: #d8dee4;
+
+  --color-fg-default: #1f2328;
+  --color-fg-muted: #59636e;
+  --color-fg-subtle: #818b98;
+
+  --color-accent: #0969da;
+  --color-accent-emphasis: #0550ae;
+  --color-accent-subtle: #ddf4ff;
+
+  --color-success: #1a7f37;
+  --color-success-subtle: #dafbe1;
+
+  --color-attention: #9a6700;
+  --color-attention-subtle: #fff8c5;
+
+  --color-danger: #cf222e;
+  --color-danger-subtle: #ffebe9;
+
+  /* GitHub 导航选中态的下划线橙色 */
+  --color-nav-underline: #fd8c73;
+}
