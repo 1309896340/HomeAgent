@@ -35,7 +35,7 @@ from web.backend.config import settings
 if isinstance(sys.stdout, io.TextIOWrapper):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-SKILLS_DIR = Path(__file__).resolve().parents[1] / "skills"
+SKILLS_DIR = Path(__file__).resolve().parents[1] / "skills" / "agent"
 MAX_ROUNDS = 5
 
 # ---------- mock 设备服务（家中硬件未接入，数据为假） ----------

@@ -1,12 +1,15 @@
-"""技能注册表：扫描 skills/ 目录，解析 SKILL.md frontmatter。
+"""技能注册表：扫描 skills/agent/ 目录，解析 SKILL.md frontmatter。
+
+目录约定（与开发流程技能隔离）：
+  skills/agent/  对话 Agent 的运行时技能（本注册表唯一来源）
+  skills/dev/    项目开发流程技能（供开发助手使用，对话不可见）
 
 渐进式披露三层中的前两层：
   1. list_skills()  —— 仅 name + description，供 system prompt 注入（常驻成本极低）
   2. read_skill()   —— 模型通过 read_skill 工具按需读取正文
 
-格式约定：技能 = skills/<name>/SKILL.md，文件必须以 YAML frontmatter 开头
-（首行 ---），frontmatter 含 name 与 description；不合规文件跳过并告警
-（如开发用的 web-module-init，frontmatter 不在首行，自然不会进入运行时清单）。
+格式约定：技能 = skills/agent/<name>/SKILL.md，文件必须以 YAML frontmatter
+开头（首行 ---），frontmatter 含 name 与 description；不合规文件跳过并告警。
 """
 
 from __future__ import annotations

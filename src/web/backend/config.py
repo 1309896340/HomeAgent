@@ -58,8 +58,11 @@ class Settings(BaseSettings):
 
     @property
     def skills_dir(self) -> Path:
-        """Agent 技能目录（skills/），每个技能 = 子文件夹 + SKILL.md。"""
-        return PROJECT_ROOT / "skills"
+        """对话 Agent 的运行时技能目录（skills/agent/）。
+
+        与 skills/dev/（项目开发流程技能，供开发助手使用）隔离，互不干扰。
+        """
+        return PROJECT_ROOT / "skills" / "agent"
 
 
 settings = Settings()
