@@ -8,6 +8,9 @@
       是否需要 stream_options.include_usage
   T4 视觉输入：base64 图片（data URL）能否被该模型正确理解
   T5 中断行为：流式读到一半主动断开，客户端是否干净退出
+  T6 工具调用：tools 挂载 + thinking 共存、tool_calls 流式分片格式、
+      finish_reason 取值、role:"tool" 回填后的第二轮响应、
+      无关问题在挂载 tools 时是否正常不触发
 
 用法（项目根目录执行，需先配置 .env 的 LLM.API_KEY）：
   uv run python scripts/verify_llm.py
@@ -269,6 +272,146 @@ def test_abort(client: httpx.Client) -> None:
     record("T5 abort", True, f"断开于 {got} chunks")
 
 
+# ---------- T6 工具调用 ----------
+
+WEATHER_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "get_weather",
+        "description": "查询指定城市的实时天气",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "location": {"type": "string", "description": "城市名，如 北京"},
+                "unit": {"type": "string", "enum": ["celsius", "fahrenheit"]},
+            },
+            "required": ["location"],
+        },
+    },
+}
+
+CANNED_WEATHER = {"location": "北京", "temperature": 18, "condition": "晴", "humidity": 42}
+
+
+def _stream_once(client: httpx.Client, body: dict) -> dict:
+    """跑一轮流式请求，返回观察到的结构化结果。"""
+    out = {
+        "tool_calls": {},  # index -> {"id","name","args"}
+        "finish_reasons": [],
+        "delta_keys": set(),
+        "content": "",
+        "usage": None,
+        "status": None,
+        "first_fragment_sample": None,
+    }
+    with client.stream("POST", chat_url(), json=body, headers=auth_headers()) as r:
+        out["status"] = r.status_code
+        if r.status_code != 200:
+            out["error_body"] = r.read().decode(errors="replace")[:300]
+            return out
+        for line in r.iter_lines():
+            chunk = parse_sse_line(line)
+            if chunk is None:
+                continue
+            if chunk.get("usage"):
+                out["usage"] = chunk["usage"]
+            for choice in chunk.get("choices", []):
+                if choice.get("finish_reason"):
+                    out["finish_reasons"].append(choice["finish_reason"])
+                delta = choice.get("delta") or {}
+                out["delta_keys"].update(k for k, v in delta.items() if v not in (None, "", []))
+                if delta.get("content"):
+                    out["content"] += delta["content"]
+                for tc in delta.get("tool_calls") or []:
+                    idx = tc.get("index", 0)
+                    acc = out["tool_calls"].setdefault(idx, {"id": "", "name": "", "args": ""})
+                    if tc.get("id"):
+                        acc["id"] = tc["id"]
+                    fn = tc.get("function") or {}
+                    if fn.get("name"):
+                        # 记录 name 是否会在多个分片重复下发
+                        if acc["name"] and acc["first_fragment_sample"] is None:
+                            acc["first_fragment_sample"] = "name 重复下发"
+                        acc["name"] += fn["name"]
+                    if fn.get("arguments"):
+                        acc["args"] += fn["arguments"]
+    return out
+
+
+def test_tools(client: httpx.Client) -> None:
+    section("T6 工具调用")
+    base = {
+        "model": settings.llm.model,
+        "stream": True,
+        "stream_options": {"include_usage": True},
+        "thinking": {"type": "enabled"},
+        "tools": [WEATHER_TOOL],
+        "tool_choice": "auto",
+    }
+
+    # a) 触发工具调用
+    print("[a] 挂载 tools + thinking，询问天气 →")
+    r1 = _stream_once(client, {**base, "messages": [{"role": "user", "content": "北京今天天气怎么样？"}]})
+    if r1["status"] != 200:
+        print(f"  HTTP {r1['status']}\n  body: {r1.get('error_body', '')[:300]}")
+        record("T6 tools", False, f"status={r1['status']}")
+        return
+    print(f"  finish_reason 序列: {r1['finish_reasons']}")
+    print(f"  delta 非空字段: {sorted(r1['delta_keys'])}")
+    print(f"  本轮 usage: {r1['usage']}")
+    print(f"  本轮正文: '{r1['content'][:60]}'")
+    for idx, tc in r1["tool_calls"].items():
+        print(f"  tool_call[{idx}]: id={tc['id'][:18]}… name={tc['name']} args={tc['args']} {tc.get('first_fragment_sample', '')}")
+    try:
+        args = json.loads(next(iter(r1["tool_calls"].values()))["args"]) if r1["tool_calls"] else {}
+    except ValueError:
+        args = {}
+    triggered = bool(r1["tool_calls"]) and "location" in args
+    if not triggered:
+        print("  [警告] 未触发工具调用或参数解析失败")
+
+    # b) 回填 role:"tool" 结果，验证第二轮
+    ok_round2 = False
+    if triggered:
+        first = next(iter(r1["tool_calls"].values()))
+        msgs = [
+            {"role": "user", "content": "北京今天天气怎么样？"},
+            {
+                "role": "assistant",
+                "content": r1["content"] or None,
+                "tool_calls": [{
+                    "id": first["id"], "type": "function",
+                    "function": {"name": first["name"], "arguments": first["args"]},
+                }],
+            },
+            {"role": "tool", "tool_call_id": first["id"], "content": json.dumps(CANNED_WEATHER, ensure_ascii=False)},
+        ]
+        print("[b] 回填 tool 结果（18℃ 晴）→")
+        r2 = _stream_once(client, {**base, "messages": msgs})
+        if r2["status"] != 200:
+            print(f"  二轮失败: {r2['status']} {r2.get('error_body', '')[:200]}")
+        else:
+            print(f"  finish_reason 序列: {r2['finish_reasons']}")
+            print(f"  二轮 usage: {r2['usage']}")
+            print(f"  最终回答: {r2['content'][:120]}")
+            ok_round2 = ("18" in r2["content"] or "晴" in r2["content"]) and not r2["tool_calls"]
+            if not ok_round2:
+                print("  [警告] 回答未包含工具数据或仍继续调用工具")
+
+    # c) 无关问题在挂载 tools 时不应触发
+    print("[c] 挂载 tools 但问无关问题（写诗）→")
+    r3 = _stream_once(client, {**base, "messages": [{"role": "user", "content": "写一句关于春天的诗"}]})
+    no_false_trigger = r3["status"] == 200 and not r3["tool_calls"] and len(r3["content"]) > 5
+    print(f"  status={r3['status']} tool_calls={bool(r3['tool_calls'])} content='{r3['content'][:40]}'")
+
+    facts["工具调用分片"] = (
+        f"index/id/function.name/function.arguments 分片拼接；finish_reason={r1['finish_reasons'][-1] if r1['finish_reasons'] else '无'}"
+    ) if triggered else "未触发，待查"
+    facts["tools+thinking 共存"] = "正常" if triggered else "异常"
+    record("T6 tools", triggered and ok_round2 and no_false_trigger,
+           f"触发={triggered} 二轮={ok_round2} 误触发={not no_false_trigger}")
+
+
 def summarize() -> None:
     section("汇总与实施结论")
     width = max(len(n) for n, _, _ in results) if results else 10
@@ -301,6 +444,7 @@ def main() -> None:
         "T3": test_stream,
         "T4": test_vision,
         "T5": test_abort,
+        "T6": test_tools,
     }
     with httpx.Client(timeout=120) as client:
         for name, fn in tests.items():
