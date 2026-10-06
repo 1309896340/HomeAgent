@@ -310,6 +310,7 @@ source = { editable = "." }
 dependencies = [
     { name = "fastapi", extra = ["standard"] },
     { name = "httpx" },
+    { name = "pyyaml" },
 ]
 
 [package.dev-dependencies]
@@ -321,6 +322,7 @@ dev = [
 requires-dist = [
     { name = "fastapi", extras = ["standard"], specifier = ">=0.142.2" },
     { name = "httpx", specifier = ">=0.28.1" },
+    { name = "pyyaml", specifier = ">=6.0.3" },
 ]
 
 [package.metadata.requires-dev]

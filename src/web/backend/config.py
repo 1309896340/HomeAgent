@@ -56,5 +56,10 @@ class Settings(BaseSettings):
         """语音输入的调试缓存目录（data/audio_input/）。"""
         return PROJECT_ROOT / "data" / "audio_input"
 
+    @property
+    def skills_dir(self) -> Path:
+        """Agent 技能目录（skills/），每个技能 = 子文件夹 + SKILL.md。"""
+        return PROJECT_ROOT / "skills"
+
 
 settings = Settings()

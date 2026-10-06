@@ -1,10 +1,13 @@
 """LLM 流式调用服务（火山引擎 豆包，OpenAI 兼容协议）。
 
-端点行为均为 2026-10-07 实测结论（scripts/verify_llm.py）：
+端点行为均为 2026-10-07 实测结论（scripts/verify_llm.py T1-T6）：
 - thinking.type = enabled/disabled，不传默认开启思考
 - 思考内容在 delta.reasoning_content，正文在 delta.content
 - usage 在流式最后 1-2 个 chunk，stream_options.include_usage 开启
 - data: [DONE] 终止
+- 工具调用：delta.tool_calls[].{index,id,function.name,function.arguments}
+  分片拼接；工具轮 finish_reason=tool_calls 且 content 为空；
+  role:"tool" 回填后二轮正常；每轮请求各带一份 usage（多轮需累加）
 
 本机以外的外部服务调用走系统代理没问题（httpx 默认 trust_env=True）。
 """
@@ -19,10 +22,17 @@ import httpx
 
 from web.backend.config import settings
 
-SYSTEM_PROMPT = (
-    "你是 HomeAgent，一个运行在用户家中的智能助手。"
-    "回答用中文，简洁准确；涉及操作类请求时说明你目前只能对话，设备控制能力后续开放。"
+BASE_PROMPT = (
+    "你是 HomeAgent，一个运行在用户家中的智能助手。回答用中文，简洁准确。"
 )
+
+SKILL_PROMPT_TEMPLATE = """
+
+## 可用技能（仅名称与简介）
+{lines}
+
+当对话涉及上述技能领域时，先调用 read_skill 工具获取该技能的完整说明，再严格按说明行动（工具/数据规则以技能说明为准）。
+"""
 
 # 思考过程与正文之间可能出现空内容 chunk，读取超时给足余量即可
 LLM_TIMEOUT = httpx.Timeout(120.0, connect=10.0)
@@ -33,16 +43,27 @@ MAX_IMAGES = 4
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
 
 
+def build_system_prompt(skill_manifest: list[dict[str, str]]) -> str:
+    """基础人设 + 技能清单（渐进式披露第一层：只有名称与简介常驻）。"""
+    if not skill_manifest:
+        return BASE_PROMPT
+    lines = "\n".join(f"- {s['name']}: {s['description']}" for s in skill_manifest)
+    return BASE_PROMPT + SKILL_PROMPT_TEMPLATE.format(lines=lines)
+
+
 def build_llm_messages(
     history: list[dict[str, Any]],
     content: str,
     images: list[str],
+    skill_manifest: list[dict[str, str]] | None = None,
 ) -> list[dict[str, Any]]:
     """组装上下文：全部文字历史 + 仅当前这条消息携带图片。
 
     history: [{"role": "user"|"assistant", "content": str}, ...]（不含本次）
     """
-    msgs: list[dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
+    msgs: list[dict[str, Any]] = [
+        {"role": "system", "content": build_system_prompt(skill_manifest or [])}
+    ]
     for h in history:
         msgs.append({"role": h["role"], "content": h["content"]})
     if images:
@@ -54,23 +75,32 @@ def build_llm_messages(
     return msgs
 
 
-async def stream_chat(messages: list[dict[str, Any]]) -> AsyncIterator[dict[str, Any]]:
+async def stream_chat(
+    messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None
+) -> AsyncIterator[dict[str, Any]]:
     """流式调用 LLM，产出统一事件：
 
     {"type": "thinking_delta"|"content_delta", "text": str}
     {"type": "usage", "prompt_tokens": int, "completion_tokens": int, "total_tokens": int}
+    {"type": "tool_calls", "calls": [{"id", "name", "arguments"}]}   # 流结束后一次性给出
 
     连接失败 / 非 200 抛 LLMError；上游中断自然结束迭代。
     """
-    body = {
+    body: dict[str, Any] = {
         "model": settings.llm.model,
         "messages": messages,
         "stream": True,
         "stream_options": {"include_usage": True},
         "thinking": {"type": "enabled"},
     }
+    if tools:
+        body["tools"] = tools
+        body["tool_choice"] = "auto"
     headers = {"Authorization": f"Bearer {settings.llm.api_key}"}
     url = f"{settings.llm.base_url.rstrip('/')}/chat/completions"
+
+    # tool_calls 分片累积（T6 实测：arguments 为 JSON 字符串分片，id 下发一次）
+    tc_acc: dict[int, dict[str, str]] = {}
 
     async with httpx.AsyncClient(timeout=LLM_TIMEOUT) as client:
         try:
@@ -104,8 +134,21 @@ async def stream_chat(messages: list[dict[str, Any]]) -> AsyncIterator[dict[str,
                         c = delta.get("content")
                         if c:
                             yield {"type": "content_delta", "text": c}
+                        for tc in delta.get("tool_calls") or []:
+                            idx = tc.get("index", 0)
+                            acc = tc_acc.setdefault(idx, {"id": "", "name": "", "arguments": ""})
+                            if tc.get("id"):
+                                acc["id"] = tc["id"]
+                            fn = tc.get("function") or {}
+                            if fn.get("name"):
+                                acc["name"] += fn["name"]
+                            if fn.get("arguments"):
+                                acc["arguments"] += fn["arguments"]
         except httpx.HTTPError as e:
             raise LLMError(f"LLM 连接异常: {type(e).__name__}: {e}") from e
+
+    if tc_acc:
+        yield {"type": "tool_calls", "calls": [tc_acc[i] for i in sorted(tc_acc)]}
 
 
 class LLMError(RuntimeError):

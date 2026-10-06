@@ -3,10 +3,13 @@
 SSE 事件协议（data: {json}\n\n）：
   {"type": "thinking_delta", "text": str}   思考过程增量
   {"type": "content_delta",  "text": str}   正文增量
+  {"type": "tool_use", "name": str, "args": object}   工具调用（已执行）
   {"type": "error",          "message": str}
   {"type": "meta", "duration_ms": int, "prompt_tokens": int|None, ...}
   {"type": "done", "message_id": str, "status": "complete"|"error"}
 
+agent loop：单条消息最多 MAX_AGENT_ROUNDS 轮工具调用；
+meta 聚合全部轮次的 usage（T6 实测每轮各带一份，需累加）。
 客户端中断（AbortController / 关闭页面 / 切走 tab）时，
 服务端捕获 CancelledError，把已生成的部分内容落库并标记 interrupted。
 """
@@ -27,7 +30,7 @@ from fastapi.responses import StreamingResponse
 from web.backend.config import settings
 from web.backend.db import db
 from web.backend.schemas.chat import MessageCreate, SessionCreate, SessionUpdate
-from web.backend.services import asr_service
+from web.backend.services import agent_tools, asr_service, skill_registry
 from web.backend.services.llm_service import (
     ALLOWED_IMAGE_MIMES,
     LLMError,
@@ -37,6 +40,9 @@ from web.backend.services.llm_service import (
 )
 
 router = APIRouter(prefix="/chat", tags=["chat"])
+
+# agent loop 单条消息的最大工具轮数，防死循环
+MAX_AGENT_ROUNDS = 5
 
 AUDIO_EXT_MIMES = {
     ".wav": "audio/wav", ".mp3": "audio/mpeg", ".m4a": "audio/mp4",
@@ -169,17 +175,23 @@ def _images_to_data_urls(urls: list[str]) -> list[str]:
 # ---------- 流式对话 ----------
 
 async def _chat_event_stream(session_id: str, history: list[dict], content: str, images: list[str]):
-    """SSE 生成器：累积思考/正文增量，结束时按状态落库。"""
+    """SSE 生成器：agent loop（流式输出 + 工具调用多轮），结束时按状态落库。
+
+    事件流：thinking_delta / content_delta / tool_use / usage（透传）/
+    meta（聚合全部轮次的 usage 与总耗时）/ done。
+    """
     start = time.perf_counter()
     thinking_parts: list[str] = []
     content_parts: list[str] = []
-    usage: dict | None = None
+    usage_sums = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    usage_seen = False
     saved = {"done": False}
 
     def save(status: str) -> str:
         saved["done"] = True
         mid = uuid.uuid4().hex
         duration_ms = int((time.perf_counter() - start) * 1000)
+        u = usage_sums if usage_seen else None
         with db() as conn:
             conn.execute(
                 """INSERT INTO messages
@@ -189,33 +201,73 @@ async def _chat_event_stream(session_id: str, history: list[dict], content: str,
                 (
                     mid, session_id, "".join(content_parts), "".join(thinking_parts) or None,
                     duration_ms,
-                    usage.get("prompt_tokens") if usage else None,
-                    usage.get("completion_tokens") if usage else None,
-                    usage.get("total_tokens") if usage else None,
+                    u and u["prompt_tokens"], u and u["completion_tokens"], u and u["total_tokens"],
                     status, _now(),
                 ),
             )
             conn.execute("UPDATE sessions SET updated_at = ? WHERE id = ?", (_now(), session_id))
         return mid
 
-    messages = build_llm_messages(history, content, images)
-    try:
-        async for ev in stream_chat(messages):
-            if ev["type"] == "thinking_delta":
-                thinking_parts.append(ev["text"])
-            elif ev["type"] == "content_delta":
-                content_parts.append(ev["text"])
-            elif ev["type"] == "usage":
-                usage = ev
-            yield _sse(ev)
-        mid = save("complete")
-        yield _sse({
+    def meta_event() -> dict:
+        u = usage_sums if usage_seen else None
+        return {
             "type": "meta",
             "duration_ms": int((time.perf_counter() - start) * 1000),
-            "prompt_tokens": usage.get("prompt_tokens") if usage else None,
-            "completion_tokens": usage.get("completion_tokens") if usage else None,
-            "total_tokens": usage.get("total_tokens") if usage else None,
-        })
+            "prompt_tokens": u and u["prompt_tokens"],
+            "completion_tokens": u and u["completion_tokens"],
+            "total_tokens": u and u["total_tokens"],
+        }
+
+    messages = build_llm_messages(history, content, images, skill_registry.list_skills())
+    tools = agent_tools.build_tool_specs()
+    try:
+        for _round in range(MAX_AGENT_ROUNDS):
+            round_content: list[str] = []
+            round_calls: list[dict] = []
+            async for ev in stream_chat(messages, tools):
+                if ev["type"] == "thinking_delta":
+                    thinking_parts.append(ev["text"])
+                elif ev["type"] == "content_delta":
+                    content_parts.append(ev["text"])
+                    round_content.append(ev["text"])
+                elif ev["type"] == "usage":
+                    usage_seen = True
+                    for k in usage_sums:
+                        if ev.get(k):
+                            usage_sums[k] += ev[k]
+                elif ev["type"] == "tool_calls":
+                    round_calls = ev["calls"]
+                yield _sse(ev)
+
+            if not round_calls:
+                break
+
+            # 执行本轮全部工具调用（白名单见 agent_tools），错误作为结果回传给模型自愈
+            assistant_calls = []
+            tool_msgs = []
+            for call in round_calls:
+                try:
+                    args = json.loads(call["arguments"] or "{}")
+                except ValueError:
+                    args = {}
+                if not isinstance(args, dict):
+                    args = {}
+                result = agent_tools.execute_tool(call["name"], args)
+                yield _sse({"type": "tool_use", "name": call["name"], "args": args})
+                assistant_calls.append({
+                    "id": call["id"], "type": "function",
+                    "function": {"name": call["name"], "arguments": call["arguments"] or "{}"},
+                })
+                tool_msgs.append({"role": "tool", "tool_call_id": call["id"], "content": result})
+            messages.append({
+                "role": "assistant",
+                "content": "".join(round_content) or None,
+                "tool_calls": assistant_calls,
+            })
+            messages.extend(tool_msgs)
+
+        mid = save("complete")
+        yield _sse(meta_event())
         yield _sse({"type": "done", "message_id": mid, "status": "complete"})
     except (asyncio.CancelledError, GeneratorExit):
         # 客户端断开 / 切走 tab：保留已生成部分，标记中断
@@ -224,11 +276,7 @@ async def _chat_event_stream(session_id: str, history: list[dict], content: str,
     except LLMError as e:
         yield _sse({"type": "error", "message": str(e)})
         mid = save("error")
-        yield _sse({
-            "type": "meta",
-            "duration_ms": int((time.perf_counter() - start) * 1000),
-            "prompt_tokens": None, "completion_tokens": None, "total_tokens": None,
-        })
+        yield _sse(meta_event())
         yield _sse({"type": "done", "message_id": mid, "status": "error"})
 
 
