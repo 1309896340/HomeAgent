@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import io
 import json
 import struct
 import sys
@@ -28,7 +29,9 @@ import httpx
 
 from web.backend.config import settings
 
-sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+# Windows 控制台默认 GBK，重配为 UTF-8；isinstance 兼作类型收窄（TextIO 无 reconfigure）
+if isinstance(sys.stdout, io.TextIOWrapper):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 results: list[tuple[str, str, str]] = []  # (用例, 状态, 摘要)
 facts: dict[str, str] = {}  # 供实施直接引用的结论
