@@ -3,7 +3,7 @@ services:
     image: ghcr.io/scisaga/qwen3-asr-openai:latest
     container_name: qwen3-asr
     ports:
-      - "12301:8000"  # 宿主机端口映射到容器内8000
+      - "12301:12301"  # 镜像内 uvicorn 固定监听 12301，宿主机同端口映射
     volumes:
       - ./models:/models  # 挂载模型缓存目录
     environment:
