@@ -15,7 +15,7 @@ const asrReady = ref(false)
 
 // 流式状态（当前正在生成的助手消息）
 const streaming = ref(false)
-const st = ref({ thinking: '', content: '', elapsedMs: 0, meta: null })
+const st = ref({ thinking: '', content: '', elapsedMs: 0, meta: null, toolUses: [] })
 let abortCtl = null
 let timer = null
 
@@ -132,19 +132,21 @@ async function regenerate() {
 
 async function runStream(url, body) {
   streaming.value = true
-  st.value = { thinking: '', content: '', elapsedMs: 0, meta: null }
+  st.value = { thinking: '', content: '', elapsedMs: 0, meta: null, toolUses: [] }
   abortCtl = new AbortController()
   startTimer()
   await nextTick(scrollBottom)
 
   const finishWith = (status) => {
-    const { thinking, content, meta } = st.value
-    if (thinking || content || status !== 'interrupted') {
+    const { thinking, content, meta, toolUses } = st.value
+    if (thinking || content || toolUses.length || status !== 'interrupted') {
       messages.value.push({
         id: meta?.message_id || `local-a-${Date.now()}`,
         role: 'assistant',
         content,
         thinking: thinking || null,
+        // v1 工具调用不落库，仅本会话视图内保留（刷新后消失）
+        toolUses: [...toolUses],
         duration_ms: meta?.duration_ms ?? st.value.elapsedMs,
         prompt_tokens: meta?.prompt_tokens ?? null,
         completion_tokens: meta?.completion_tokens ?? null,
@@ -162,6 +164,8 @@ async function runStream(url, body) {
           st.value.thinking += ev.text
         } else if (ev.type === 'content_delta') {
           st.value.content += ev.text
+        } else if (ev.type === 'tool_use') {
+          st.value.toolUses.push({ name: ev.name, args: ev.args })
         } else if (ev.type === 'meta') {
           st.value.meta = { ...st.value.meta, ...ev }
         } else if (ev.type === 'error') {
@@ -169,7 +173,7 @@ async function runStream(url, body) {
         } else if (ev.type === 'done') {
           st.value.meta = { ...st.value.meta, message_id: ev.message_id }
         }
-        if (['thinking_delta', 'content_delta'].includes(ev.type)) {
+        if (['thinking_delta', 'content_delta', 'tool_use'].includes(ev.type)) {
           if (pinned) nextTick(scrollBottom)
         }
       },
@@ -301,7 +305,13 @@ const vFocus = { mounted: (el) => el.focus() }
           <!-- 流式中的助手消息 -->
           <MessageItem
             v-if="streaming"
-            :msg="{ role: 'assistant', content: st.content, thinking: st.thinking || null, status: 'complete' }"
+            :msg="{
+              role: 'assistant',
+              content: st.content,
+              thinking: st.thinking || null,
+              toolUses: st.toolUses,
+              status: 'complete',
+            }"
             :streaming="true"
             :live-elapsed-ms="st.elapsedMs"
           />

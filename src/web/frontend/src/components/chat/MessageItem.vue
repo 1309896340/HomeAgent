@@ -39,6 +39,13 @@ watch(
 
 const fmtTok = (n) => (n === null || n === undefined ? '—' : n)
 const fmtDur = (ms) => (ms === null || ms === undefined ? '—' : `${(ms / 1000).toFixed(1)}s`)
+
+// 工具徽标文案：read_skill 显示技能名，其余工具显示紧凑参数
+function toolLabel(t) {
+  if (t.name === 'read_skill') return `技能 ${t.args?.name ?? ''}`
+  const s = JSON.stringify(t.args ?? {})
+  return `${t.name} ${s.length > 46 ? `${s.slice(0, 46)}…` : s}`
+}
 </script>
 
 <template>
@@ -76,6 +83,21 @@ const fmtDur = (ms) => (ms === null || ms === undefined ? '—' : `${(ms / 1000)
 
       <!-- 助手消息 -->
       <template v-else>
+        <!-- 工具调用徽标 -->
+        <div v-if="msg.toolUses?.length" class="mb-2 flex flex-wrap gap-1.5">
+          <span
+            v-for="(t, i) in msg.toolUses"
+            :key="i"
+            class="inline-flex items-center gap-1 rounded-full border border-line bg-canvas-subtle px-2 py-0.5 text-xs text-fg-muted"
+          >
+            <svg class="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+              <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
+            </svg>
+            {{ toolLabel(t) }}
+          </span>
+        </div>
+
         <!-- 思考过程包围框：流式时自动展开，完成后折叠可回看 -->
         <details v-if="msg.thinking" class="mb-2 rounded-md border border-line bg-canvas-subtle" :open="streaming">
           <summary class="cursor-pointer select-none px-3 py-1.5 text-xs font-medium text-fg-muted">
