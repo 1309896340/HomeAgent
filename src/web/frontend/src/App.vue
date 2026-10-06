@@ -1,6 +1,7 @@
 <script setup>
 import { ref, computed } from 'vue'
 import DashboardView from './views/DashboardView.vue'
+import ChatView from './views/ChatView.vue'
 import PlaceholderView from './views/PlaceholderView.vue'
 
 // 顶层导航：每个 tab 对应一个相对独立的模块。
@@ -16,8 +17,7 @@ const tabs = [
     key: 'chat',
     label: '对话',
     icon: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
-    component: PlaceholderView,
-    props: { title: '对话', description: '与 HomeAgent 的语音 / 文字对话界面，规划中。' },
+    component: ChatView,
   },
   {
     key: 'devices',
@@ -109,8 +109,8 @@ const activeTab = computed(() => tabs.find((t) => t.key === active.value))
       </div>
     </header>
 
-    <!-- 内容区：tab 切换 -->
-    <main class="mx-auto max-w-7xl px-4 py-6 lg:px-6">
+    <!-- 内容区：tab 切换（对话模块全屏无内边距，其余 tab 居中带内边距） -->
+    <main :class="active === 'chat' ? '' : 'mx-auto max-w-7xl px-4 py-6 lg:px-6'">
       <component :is="activeTab.component" v-bind="activeTab.props ?? {}" />
     </main>
   </div>

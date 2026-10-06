@@ -63,7 +63,66 @@ export function put(path, body) {
   return request(path, { method: 'PUT', body })
 }
 
+/** PATCH 请求（JSON body） */
+export function patch(path, body) {
+  return request(path, { method: 'PATCH', body })
+}
+
 /** DELETE 请求 */
 export function del(path) {
   return request(path, { method: 'DELETE' })
+}
+
+/** multipart 文件上传 */
+export async function upload(path, file, fieldName = 'file') {
+  const form = new FormData()
+  form.append(fieldName, file)
+  const response = await fetch(`${BASE_URL}${path}`, { method: 'POST', body: form })
+  if (!response.ok) {
+    const text = await response.text().catch(() => '')
+    throw new Error(`上传失败: ${response.status}${text ? ` - ${text}` : ''}`)
+  }
+  return response.json()
+}
+
+/**
+ * POST SSE 流式请求：解析 data: {json} 事件块，逐个回调 onEvent。
+ * 通过 AbortController.signal 支持中断（中断时服务端保留已生成内容）。
+ * @param {string} path 相对路径
+ * @param {object} body JSON 请求体
+ * @param {{ signal?: AbortSignal, onEvent?: (event: object) => void }} [options]
+ */
+export async function postSSE(path, body, { signal, onEvent } = {}) {
+  const response = await fetch(`${BASE_URL}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal,
+  })
+  if (!response.ok) {
+    const text = await response.text().catch(() => '')
+    throw new Error(`请求失败: ${response.status}${text ? ` - ${text}` : ''}`)
+  }
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    let sep
+    while ((sep = buffer.indexOf('\n\n')) >= 0) {
+      const block = buffer.slice(0, sep)
+      buffer = buffer.slice(sep + 2)
+      for (const line of block.split('\n')) {
+        if (!line.startsWith('data:')) continue
+        try {
+          onEvent?.(JSON.parse(line.slice(5)))
+        } catch {
+          // 忽略无法解析的行
+        }
+      }
+    }
+  }
 }
