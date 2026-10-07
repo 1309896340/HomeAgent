@@ -1,6 +1,6 @@
 <script setup>
 // 用户管理（仅 admin）：列表 / 新增 / 改角色 / 重置密码 / 禁用启用 / 移除
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, nextTick } from 'vue'
 import { get, post, patch, del as apiDelete } from '../../api/client.js'
 import { useAuth } from '../../stores/auth.js'
 
@@ -11,6 +11,14 @@ const notice = ref('')
 const showCreate = ref(false)
 const creating = ref(false)
 const createForm = ref({ username: '', display_name: '', password: '', role: 'member' })
+
+// 重置密码 modal
+const resetTarget = ref(null) // 待重置的用户对象
+const resetPw = ref('')
+const resetPwConfirm = ref('')
+const resetError = ref('')
+const resetBusy = ref(false)
+const resetPwInput = ref(null)
 
 const ROLE_LABELS = { admin: '管理员', member: '成员', guest: '客人' }
 
@@ -54,14 +62,37 @@ function changeRole(u, event) {
   run(() => patch(`/admin/users/${u.id}`, { role }))
 }
 
-function resetPassword(u) {
-  const pw = prompt(`为「${u.display_name || u.username}」设置新密码（至少 6 位）：`)
-  if (pw === null) return
-  if (pw.length < 6) {
-    notice.value = '密码至少 6 位'
+// ---------- 重置密码 modal ----------
+function openReset(u) {
+  resetTarget.value = u
+  resetPw.value = ''
+  resetPwConfirm.value = ''
+  resetError.value = ''
+  nextTick(() => resetPwInput.value?.focus())
+}
+function closeReset() {
+  resetTarget.value = null
+}
+async function confirmReset() {
+  resetError.value = ''
+  if (resetPw.value.length < 6) {
+    resetError.value = '密码至少 6 位'
     return
   }
-  run(() => patch(`/admin/users/${u.id}`, { password: pw }), '密码已重置，该用户原登录会话已失效')
+  if (resetPw.value !== resetPwConfirm.value) {
+    resetError.value = '两次输入的密码不一致'
+    return
+  }
+  resetBusy.value = true
+  try {
+    await run(
+      () => patch(`/admin/users/${resetTarget.value.id}`, { password: resetPw.value }),
+      `已重置「${resetTarget.value.display_name || resetTarget.value.username}」的密码，其登录会话已失效`,
+    )
+    closeReset()
+  } finally {
+    resetBusy.value = false
+  }
 }
 
 function toggleDisabled(u) {
@@ -175,7 +206,7 @@ onMounted(loadUsers)
             </td>
             <td class="px-4 py-3 text-xs text-fg-muted">{{ u.last_login_at || '从未' }}</td>
             <td class="px-4 py-3 text-right text-xs">
-              <button class="text-accent hover:underline" @click="resetPassword(u)">重置密码</button>
+              <button class="text-accent hover:underline" @click="openReset(u)">重置密码</button>
               <button class="ml-3 text-attention hover:underline" @click="toggleDisabled(u)">
                 {{ u.disabled ? '启用' : '禁用' }}
               </button>
@@ -184,6 +215,59 @@ onMounted(loadUsers)
           </tr>
         </tbody>
       </table>
+    </div>
+
+    <!-- 重置密码 modal -->
+    <div
+      v-if="resetTarget"
+      class="fixed inset-0 z-50 flex items-center justify-center bg-fg-default/50 px-4"
+      @click.self="closeReset"
+      @keydown.esc="closeReset"
+    >
+      <div class="w-full max-w-sm rounded-lg border border-line bg-canvas p-5 shadow-lg" role="dialog" aria-modal="true">
+        <h3 class="font-semibold">重置密码</h3>
+        <p class="mt-1 text-xs text-fg-muted">
+          为「{{ resetTarget.display_name || resetTarget.username }}」设置新密码；提交后该用户的全部登录会话将失效。
+        </p>
+        <form class="mt-4 space-y-3 text-sm" @submit.prevent="confirmReset">
+          <label class="block">
+            <span class="mb-1 block text-fg-muted">新密码（至少 6 位）</span>
+            <input
+              ref="resetPwInput"
+              v-model="resetPw"
+              required
+              type="password"
+              autocomplete="new-password"
+              class="w-full rounded-md border border-line px-3 py-1.5 outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+            />
+          </label>
+          <label class="block">
+            <span class="mb-1 block text-fg-muted">确认新密码</span>
+            <input
+              v-model="resetPwConfirm"
+              required
+              type="password"
+              autocomplete="new-password"
+              class="w-full rounded-md border border-line px-3 py-1.5 outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+            />
+          </label>
+          <p v-if="resetError" class="rounded-md border border-danger-subtle bg-danger-subtle px-3 py-2 text-xs text-danger">
+            {{ resetError }}
+          </p>
+          <div class="flex justify-end gap-2 pt-1">
+            <button
+              type="button"
+              class="rounded-md border border-line px-3 py-1.5 transition hover:bg-canvas-subtle"
+              @click="closeReset"
+            >取消</button>
+            <button
+              type="submit"
+              :disabled="resetBusy"
+              class="rounded-md bg-accent px-3 py-1.5 font-medium text-white transition hover:bg-accent-emphasis disabled:opacity-50"
+            >{{ resetBusy ? '提交中…' : '确认重置' }}</button>
+          </div>
+        </form>
+      </div>
     </div>
   </div>
 </template>
