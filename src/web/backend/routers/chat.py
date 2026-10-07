@@ -24,11 +24,14 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, UploadFile
-from fastapi.responses import StreamingResponse
+import re
+
+from fastapi import APIRouter, Depends, HTTPException, UploadFile
+from fastapi.responses import FileResponse, StreamingResponse
 
 from web.backend.config import settings
 from web.backend.db import db
+from web.backend.routers.deps import get_current_user
 from web.backend.schemas.chat import MessageCreate, SessionCreate, SessionUpdate
 from web.backend.services import agent_tools, asr_service, skill_registry
 from web.backend.services.llm_service import (
@@ -43,6 +46,8 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 
 # agent loop 单条消息的最大工具轮数，防死循环
 MAX_AGENT_ROUNDS = 5
+
+_UPLOAD_NAME_RE = re.compile(r"[0-9a-f]{32}\.(?:png|jpg|webp|gif)")
 
 AUDIO_EXT_MIMES = {
     ".wav": "audio/wav", ".mp3": "audio/mpeg", ".m4a": "audio/mp4",
@@ -77,32 +82,34 @@ def _row_to_message(row) -> dict:
 # ---------- 会话管理 ----------
 
 @router.get("/sessions")
-def list_sessions():
+def list_sessions(user: dict = Depends(get_current_user)):
     with db() as conn:
         rows = conn.execute(
-            "SELECT id, title, created_at, updated_at FROM sessions ORDER BY updated_at DESC"
+            "SELECT id, title, created_at, updated_at FROM sessions"
+            " WHERE user_id = ? ORDER BY updated_at DESC",
+            (user["id"],),
         ).fetchall()
     return [dict(r) for r in rows]
 
 
 @router.post("/sessions")
-def create_session(body: SessionCreate):
+def create_session(body: SessionCreate, user: dict = Depends(get_current_user)):
     sid = uuid.uuid4().hex
     now = _now()
     with db() as conn:
         conn.execute(
-            "INSERT INTO sessions (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
-            (sid, body.title.strip() or "新对话", now, now),
+            "INSERT INTO sessions (id, user_id, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+            (sid, user["id"], body.title.strip() or "新对话", now, now),
         )
     return {"id": sid, "title": body.title.strip() or "新对话", "created_at": now, "updated_at": now}
 
 
 @router.patch("/sessions/{session_id}")
-def rename_session(session_id: str, body: SessionUpdate):
+def rename_session(session_id: str, body: SessionUpdate, user: dict = Depends(get_current_user)):
     with db() as conn:
         cur = conn.execute(
-            "UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?",
-            (body.title.strip(), _now(), session_id),
+            "UPDATE sessions SET title = ?, updated_at = ? WHERE id = ? AND user_id = ?",
+            (body.title.strip(), _now(), session_id, user["id"]),
         )
         if cur.rowcount == 0:
             raise HTTPException(404, "会话不存在")
@@ -110,18 +117,22 @@ def rename_session(session_id: str, body: SessionUpdate):
 
 
 @router.delete("/sessions/{session_id}")
-def delete_session(session_id: str):
+def delete_session(session_id: str, user: dict = Depends(get_current_user)):
     with db() as conn:
-        cur = conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+        cur = conn.execute(
+            "DELETE FROM sessions WHERE id = ? AND user_id = ?", (session_id, user["id"])
+        )
         if cur.rowcount == 0:
             raise HTTPException(404, "会话不存在")
     return {"ok": True}
 
 
 @router.get("/sessions/{session_id}/messages")
-def list_messages(session_id: str):
+def list_messages(session_id: str, user: dict = Depends(get_current_user)):
     with db() as conn:
-        if not conn.execute("SELECT 1 FROM sessions WHERE id = ?", (session_id,)).fetchone():
+        if not conn.execute(
+            "SELECT 1 FROM sessions WHERE id = ? AND user_id = ?", (session_id, user["id"])
+        ).fetchone():
             raise HTTPException(404, "会话不存在")
         rows = conn.execute(
             "SELECT * FROM messages WHERE session_id = ? ORDER BY created_at, rowid",
@@ -280,15 +291,19 @@ async def _chat_event_stream(session_id: str, history: list[dict], content: str,
         yield _sse({"type": "done", "message_id": mid, "status": "error"})
 
 
-def _require_session(session_id: str) -> None:
+def _require_session(session_id: str, user_id: str) -> None:
     with db() as conn:
-        if not conn.execute("SELECT 1 FROM sessions WHERE id = ?", (session_id,)).fetchone():
+        if not conn.execute(
+            "SELECT 1 FROM sessions WHERE id = ? AND user_id = ?", (session_id, user_id)
+        ).fetchone():
             raise HTTPException(404, "会话不存在")
 
 
 @router.post("/sessions/{session_id}/messages")
-async def post_message(session_id: str, body: MessageCreate):
-    _require_session(session_id)
+async def post_message(
+    session_id: str, body: MessageCreate, user: dict = Depends(get_current_user)
+):
+    _require_session(session_id, user["id"])
     content = body.content.strip()
     if not content and not body.images:
         raise HTTPException(400, "消息内容不能为空")
@@ -323,9 +338,9 @@ async def post_message(session_id: str, body: MessageCreate):
 
 
 @router.post("/sessions/{session_id}/regenerate")
-async def regenerate(session_id: str):
+async def regenerate(session_id: str, user: dict = Depends(get_current_user)):
     """删除最后一条助手消息并重新生成（上下文止于其对应的用户消息）。"""
-    _require_session(session_id)
+    _require_session(session_id, user["id"])
     with db() as conn:
         rows = conn.execute(
             "SELECT * FROM messages WHERE session_id = ? ORDER BY created_at, rowid",
@@ -359,12 +374,12 @@ async def regenerate(session_id: str):
 # ---------- 语音转写 ----------
 
 @router.get("/asr/status")
-async def asr_status():
+async def asr_status(_: dict = Depends(get_current_user)):
     return {"ready": await asr_service.check_ready()}
 
 
 @router.post("/transcribe")
-async def transcribe_audio(file: UploadFile):
+async def transcribe_audio(file: UploadFile, _: dict = Depends(get_current_user)):
     payload = await file.read()
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in AUDIO_EXT_MIMES:
@@ -381,3 +396,15 @@ async def transcribe_audio(file: UploadFile):
     except asr_service.ASRError as e:
         raise HTTPException(503, str(e)) from e
     return {"text": text}
+
+
+# ---------- 消息图片（受登录保护的静态端点，替代 StaticFiles 挂载） ----------
+
+@router.get("/uploads/{name}")
+def get_upload(name: str, _: dict = Depends(get_current_user)):
+    if not _UPLOAD_NAME_RE.fullmatch(name):
+        raise HTTPException(404, "文件不存在")
+    path = settings.db_dir / "uploads" / name
+    if not path.is_file():
+        raise HTTPException(404, "文件不存在")
+    return FileResponse(path)
