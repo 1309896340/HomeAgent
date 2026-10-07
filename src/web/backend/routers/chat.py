@@ -3,13 +3,19 @@
 SSE 事件协议（data: {json}\n\n）：
   {"type": "thinking_delta", "text": str}   思考过程增量
   {"type": "content_delta",  "text": str}   正文增量
-  {"type": "tool_use", "name": str, "args": object}   工具调用（已执行）
+  {"type": "tool_use", "name": str, "args": object}   function 工具调用（已执行）
+  {"type": "web_search", "query": str|None}           服务端开始联网搜索
+  {"type": "web_result", "queries": [str], "citations": [{title,url,site_name}]}
+                                            本轮搜索结果与引用（流结束时）
   {"type": "error",          "message": str}
-  {"type": "meta", "duration_ms": int, "prompt_tokens": int|None, ...}
+  {"type": "meta", "duration_ms": int, "prompt_tokens": int|None,
+   "web_search": int}                      web_search 为搜索调用次数
   {"type": "done", "message_id": str, "status": "complete"|"error"}
 
-agent loop：单条消息最多 MAX_AGENT_ROUNDS 轮工具调用；
-meta 聚合全部轮次的 usage（T6 实测每轮各带一份，需累加）。
+agent loop：单条消息最多 MAX_AGENT_ROUNDS 轮工具调用；function 工具结果
+以 function_call_output 回放给模型（verify_responses.py T6）。联网搜索是
+服务端工具（llm_service 按 web_search 开关挂载），不经工具循环。
+meta 聚合全部轮次的 usage（每轮各带一份，需累加）。
 客户端中断（AbortController / 关闭页面 / 切走 tab）时，
 服务端捕获 CancelledError，把已生成的部分内容落库并标记 interrupted。
 """
@@ -38,7 +44,7 @@ from web.backend.services.llm_service import (
     ALLOWED_IMAGE_MIMES,
     LLMError,
     MAX_IMAGES,
-    build_llm_messages,
+    build_llm_input,
     stream_chat,
 )
 
@@ -70,6 +76,8 @@ def _row_to_message(row) -> dict:
         "content": row["content"],
         "thinking": row["thinking"],
         "images": json.loads(row["images"]) if row["images"] else [],
+        "citations": json.loads(row["citations"]) if row["citations"] else [],
+        "web_search": bool(row["web_search"]),
         "duration_ms": row["duration_ms"],
         "prompt_tokens": row["prompt_tokens"],
         "completion_tokens": row["completion_tokens"],
@@ -185,11 +193,17 @@ def _images_to_data_urls(urls: list[str]) -> list[str]:
 
 # ---------- 流式对话 ----------
 
-async def _chat_event_stream(session_id: str, history: list[dict], content: str, images: list[str]):
+async def _chat_event_stream(
+    session_id: str,
+    history: list[dict],
+    content: str,
+    images: list[str],
+    web_search: bool = False,
+):
     """SSE 生成器：agent loop（流式输出 + 工具调用多轮），结束时按状态落库。
 
-    事件流：thinking_delta / content_delta / tool_use / usage（透传）/
-    meta（聚合全部轮次的 usage 与总耗时）/ done。
+    事件流：thinking_delta / content_delta / tool_use / web_search /
+    web_result / usage（透传）/ meta（聚合 usage、搜索次数）/ done。
     """
     start = time.perf_counter()
     thinking_parts: list[str] = []
@@ -197,6 +211,9 @@ async def _chat_event_stream(session_id: str, history: list[dict], content: str,
     usage_sums = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
     usage_seen = False
     saved = {"done": False}
+    search_count = 0
+    citations_acc: list[dict] = []
+    seen_urls: set[str] = set()
 
     def save(status: str) -> str:
         saved["done"] = True
@@ -206,11 +223,12 @@ async def _chat_event_stream(session_id: str, history: list[dict], content: str,
         with db() as conn:
             conn.execute(
                 """INSERT INTO messages
-                   (id, session_id, role, content, thinking, images, duration_ms,
+                   (id, session_id, role, content, thinking, images, citations, duration_ms,
                     prompt_tokens, completion_tokens, total_tokens, status, created_at)
-                   VALUES (?, ?, 'assistant', ?, ?, NULL, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, 'assistant', ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     mid, session_id, "".join(content_parts), "".join(thinking_parts) or None,
+                    json.dumps(citations_acc, ensure_ascii=False) if citations_acc else None,
                     duration_ms,
                     u and u["prompt_tokens"], u and u["completion_tokens"], u and u["total_tokens"],
                     status, _now(),
@@ -227,25 +245,34 @@ async def _chat_event_stream(session_id: str, history: list[dict], content: str,
             "prompt_tokens": u and u["prompt_tokens"],
             "completion_tokens": u and u["completion_tokens"],
             "total_tokens": u and u["total_tokens"],
+            "web_search": search_count,
         }
 
-    messages = build_llm_messages(history, content, images, skill_registry.list_skills())
+    instructions, input_items = build_llm_input(
+        history, content, images, skill_registry.list_skills()
+    )
     tools = agent_tools.build_tool_specs()
     try:
         for _round in range(MAX_AGENT_ROUNDS):
-            round_content: list[str] = []
             round_calls: list[dict] = []
-            async for ev in stream_chat(messages, tools):
+            async for ev in stream_chat(instructions, input_items, tools, web_search):
                 if ev["type"] == "thinking_delta":
                     thinking_parts.append(ev["text"])
                 elif ev["type"] == "content_delta":
                     content_parts.append(ev["text"])
-                    round_content.append(ev["text"])
                 elif ev["type"] == "usage":
                     usage_seen = True
                     for k in usage_sums:
                         if ev.get(k):
                             usage_sums[k] += ev[k]
+                elif ev["type"] == "web_search":
+                    search_count += 1
+                elif ev["type"] == "web_result":
+                    # llm_service 已按 URL 去重，这里防多轮间重复
+                    for c in ev.get("citations", []):
+                        if c.get("url") and c["url"] not in seen_urls:
+                            seen_urls.add(c["url"])
+                            citations_acc.append(c)
                 elif ev["type"] == "tool_calls":
                     round_calls = ev["calls"]
                 yield _sse(ev)
@@ -253,9 +280,8 @@ async def _chat_event_stream(session_id: str, history: list[dict], content: str,
             if not round_calls:
                 break
 
-            # 执行本轮全部工具调用（白名单见 agent_tools），错误作为结果回传给模型自愈
-            assistant_calls = []
-            tool_msgs = []
+            # 执行本轮全部 function 工具调用（白名单见 agent_tools），错误作为
+            # 结果回传给模型自愈；function_call / function_call_output 直接回放
             for call in round_calls:
                 try:
                     args = json.loads(call["arguments"] or "{}")
@@ -265,17 +291,13 @@ async def _chat_event_stream(session_id: str, history: list[dict], content: str,
                     args = {}
                 result = agent_tools.execute_tool(call["name"], args)
                 yield _sse({"type": "tool_use", "name": call["name"], "args": args})
-                assistant_calls.append({
-                    "id": call["id"], "type": "function",
-                    "function": {"name": call["name"], "arguments": call["arguments"] or "{}"},
+                input_items.append({
+                    "type": "function_call", "call_id": call["id"],
+                    "name": call["name"], "arguments": call["arguments"] or "{}",
                 })
-                tool_msgs.append({"role": "tool", "tool_call_id": call["id"], "content": result})
-            messages.append({
-                "role": "assistant",
-                "content": "".join(round_content) or None,
-                "tool_calls": assistant_calls,
-            })
-            messages.extend(tool_msgs)
+                input_items.append({
+                    "type": "function_call_output", "call_id": call["id"], "output": result,
+                })
 
         mid = save("complete")
         yield _sse(meta_event())
@@ -311,9 +333,11 @@ async def post_message(
 
     with db() as conn:
         conn.execute(
-            "INSERT INTO messages (id, session_id, role, content, images, status, created_at)"
-            " VALUES (?, ?, 'user', ?, ?, 'complete', ?)",
-            (uuid.uuid4().hex, session_id, content, json.dumps(image_urls) if image_urls else None, _now()),
+            "INSERT INTO messages (id, session_id, role, content, images, web_search, status, created_at)"
+            " VALUES (?, ?, 'user', ?, ?, ?, 'complete', ?)",
+            (uuid.uuid4().hex, session_id, content,
+             json.dumps(image_urls) if image_urls else None,
+             int(body.web_search), _now()),
         )
         # 首条用户消息自动作为会话标题（前 20 字），之后可手动重命名覆盖
         if content:
@@ -331,7 +355,7 @@ async def post_message(
     history = [{"role": r["role"], "content": r["content"]} for r in rows[:-1]]
 
     return StreamingResponse(
-        _chat_event_stream(session_id, history, content, body.images),
+        _chat_event_stream(session_id, history, content, body.images, body.web_search),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
@@ -365,7 +389,9 @@ async def regenerate(session_id: str, user: dict = Depends(get_current_user)):
         content = last_user["content"]
 
     return StreamingResponse(
-        _chat_event_stream(session_id, history, content, images),
+        _chat_event_stream(
+            session_id, history, content, images, bool(last_user["web_search"])
+        ),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

@@ -4,6 +4,12 @@
 SKILL.md 对应，仅供联调测试）；真实设备层落地后在此替换实现并保持
 工具签名不变，模型侧无感。
 
+声明格式：Responses API 的扁平 function 工具
+{type, name, description, parameters}（verify_responses.py T6 实测），
+与 chat/completions 的嵌套 {type, function: {...}} 不同。
+联网搜索不走这里——它是服务端工具（{"type": "web_search"}），
+由 llm_service.stream_chat 按 web_search 开关单独挂载。
+
 安全约定：模型可调用的工具仅限 TOOL_IMPLS 白名单；执行错误以 JSON
 字符串回传给模型自行恢复，不向上抛异常中断对话。
 """
@@ -27,54 +33,46 @@ MOCK_DEVICES: dict[str, dict[str, Any]] = {
     "air-purifier": {"name": "空气净化器", "type": "appliance", "online": True, "pm25": 32, "mode": "auto"},
 }
 
-# ---------- OpenAI function calling 工具声明 ----------
+# ---------- Responses function 工具声明（扁平格式） ----------
 
 TOOL_SPECS: list[dict[str, Any]] = [
     {
         "type": "function",
-        "function": {
-            "name": "read_skill",
-            "description": "读取一个技能的完整说明（SKILL.md）。当对话涉及系统提示中某个技能的领域时，先调用本工具。",
-            "parameters": {
-                "type": "object",
-                "properties": {"name": {"type": "string", "description": "技能名，见系统提示中的技能清单"}},
-                "required": ["name"],
-            },
+        "name": "read_skill",
+        "description": "读取一个技能的完整说明（SKILL.md）。当对话涉及系统提示中某个技能的领域时，先调用本工具。",
+        "parameters": {
+            "type": "object",
+            "properties": {"name": {"type": "string", "description": "技能名，见系统提示中的技能清单"}},
+            "required": ["name"],
         },
     },
     {
         "type": "function",
-        "function": {
-            "name": "list_devices",
-            "description": "列出家中全部已接入设备的概览",
-            "parameters": {"type": "object", "properties": {}},
+        "name": "list_devices",
+        "description": "列出家中全部已接入设备的概览",
+        "parameters": {"type": "object", "properties": {}},
+    },
+    {
+        "type": "function",
+        "name": "get_device_status",
+        "description": "查询单台设备的实时状态",
+        "parameters": {
+            "type": "object",
+            "properties": {"device_id": {"type": "string", "description": "设备 ID"}},
+            "required": ["device_id"],
         },
     },
     {
         "type": "function",
-        "function": {
-            "name": "get_device_status",
-            "description": "查询单台设备的实时状态",
-            "parameters": {
-                "type": "object",
-                "properties": {"device_id": {"type": "string", "description": "设备 ID"}},
-                "required": ["device_id"],
+        "name": "control_device",
+        "description": "控制一台设备执行动作",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "device_id": {"type": "string", "description": "设备 ID"},
+                "action": {"type": "string", "description": "动作，如 on/off/lock/unlock/auto/sleep"},
             },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "control_device",
-            "description": "控制一台设备执行动作",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "device_id": {"type": "string", "description": "设备 ID"},
-                    "action": {"type": "string", "description": "动作，如 on/off/lock/unlock/auto/sleep"},
-                },
-                "required": ["device_id", "action"],
-            },
+            "required": ["device_id", "action"],
         },
     },
 ]

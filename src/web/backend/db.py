@@ -56,6 +56,8 @@ CREATE TABLE IF NOT EXISTS messages (
     content           TEXT NOT NULL DEFAULT '',
     thinking          TEXT,
     images            TEXT,
+    citations         TEXT,
+    web_search        INTEGER NOT NULL DEFAULT 0,
     duration_ms       INTEGER,
     prompt_tokens     INTEGER,
     completion_tokens INTEGER,
@@ -99,6 +101,14 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE sessions ADD COLUMN user_id TEXT REFERENCES users(id)")
     # user_id 可能来自本次 ALTER，索引必须在迁移之后建
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)")
+
+    mcols = {r["name"] for r in conn.execute("PRAGMA table_info(messages)")}
+    if "citations" not in mcols:
+        # 联网搜索引用（assistant 消息，JSON 数组）
+        conn.execute("ALTER TABLE messages ADD COLUMN citations TEXT")
+    if "web_search" not in mcols:
+        # 发送消息时的联网开关状态（user 消息，0/1；重新生成时复用）
+        conn.execute("ALTER TABLE messages ADD COLUMN web_search INTEGER NOT NULL DEFAULT 0")
 
 
 def init_schema() -> None:

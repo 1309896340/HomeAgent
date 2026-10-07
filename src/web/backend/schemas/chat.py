@@ -14,6 +14,7 @@ class SessionUpdate(BaseModel):
 class MessageCreate(BaseModel):
     content: str = ""
     images: list[str] = Field(default_factory=list, description="data URL 形式的图片，最多 4 张")
+    web_search: bool = Field(default=False, description="本条消息是否启用联网搜索")
 
 
 class SessionOut(BaseModel):
@@ -29,6 +30,8 @@ class MessageOut(BaseModel):
     content: str
     thinking: str | None = None
     images: list[str] = Field(default_factory=list)
+    citations: list[dict] = Field(default_factory=list, description="联网搜索引用（assistant 消息）")
+    web_search: bool = Field(default=False, description="发送时是否启用联网搜索（user 消息）")
     duration_ms: int | None = None
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
