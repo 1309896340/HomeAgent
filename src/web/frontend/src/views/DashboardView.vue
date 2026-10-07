@@ -1,5 +1,9 @@
 <script setup>
 // 仪表盘（demo 静态数据，后续接后端 API）
+import { useAuth } from '../stores/auth.js'
+
+const auth = useAuth()
+const greetingName = () => auth.displayName.value || '朋友'
 
 const stats = [
   {
@@ -83,7 +87,7 @@ const activityDot = {
     <div class="flex flex-wrap items-end justify-between gap-3">
       <div>
         <h1 class="text-2xl font-semibold tracking-tight">仪表盘</h1>
-        <p class="mt-1 text-sm text-fg-muted">早上好，wind。以下是你的家庭概况。</p>
+        <p class="mt-1 text-sm text-fg-muted">早上好，{{ greetingName() }}。以下是你的家庭概况。</p>
       </div>
       <div class="flex gap-2">
         <button

@@ -4,6 +4,14 @@
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api'
 
+// 401 统一处理：会话过期/未登录跳转登录页（/auth/* 的探测性调用除外）
+function handle401(path) {
+  if (!path.startsWith('/auth/')) {
+    window.location.href = '/login'
+    throw new Error('登录已过期，请重新登录')
+  }
+}
+
 /**
  * 通用请求方法
  * @param {string} path 相对路径，如 '/health'
@@ -33,6 +41,7 @@ export async function request(path, options = {}) {
   })
 
   if (!response.ok) {
+    if (response.status === 401) handle401(path)
     const text = await response.text().catch(() => '')
     throw new Error(
       `API 请求失败: ${response.status} ${response.statusText}${text ? ` - ${text}` : ''}`,
@@ -79,6 +88,7 @@ export async function upload(path, file, fieldName = 'file') {
   form.append(fieldName, file)
   const response = await fetch(`${BASE_URL}${path}`, { method: 'POST', body: form })
   if (!response.ok) {
+    if (response.status === 401) handle401(path)
     const text = await response.text().catch(() => '')
     throw new Error(`上传失败: ${response.status}${text ? ` - ${text}` : ''}`)
   }
@@ -100,6 +110,7 @@ export async function postSSE(path, body, { signal, onEvent } = {}) {
     signal,
   })
   if (!response.ok) {
+    if (response.status === 401) handle401(path)
     const text = await response.text().catch(() => '')
     throw new Error(`请求失败: ${response.status}${text ? ` - ${text}` : ''}`)
   }
