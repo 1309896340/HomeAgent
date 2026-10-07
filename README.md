@@ -7,6 +7,7 @@
 - **仪表盘**：家庭概况总览（当前为静态演示数据，待设备层接入后接真实数据）
 - **对话**：与豆包（doubao-seed-2.1-lite，火山引擎 agent plan）流式对话
   - 多模态输入：文字、图片（选文件/粘贴/拖拽）、语音（浏览器录音 / 音频文件上传，本地 qwen3-asr 转写）
+  - 联网搜索：输入区开关按消息启用；走 Responses API 内置 `web_search` 服务端工具（豆包/头条系中文源，每月 2 万次免费），展示搜索词与「参考来源」引用链接（落库持久化）
   - 流式输出：思考过程包围框（可折叠回看）、实时计时、耗时与 token 统计、可随时中断（部分内容保留）
   - 多会话管理：列表 / 重命名 / 删除，首条消息自动生成标题，历史持久化（SQLite）
   - Markdown 渲染 + 代码高亮 + 复制 / 重新生成
@@ -24,7 +25,7 @@ asr/                      # qwen3-asr Docker 服务（OpenAI 兼容，GPU）
 skills/
 ├── agent/                # 对话运行时技能（后端唯一扫描来源）
 └── dev/                  # 项目开发流程技能（对话不可见）
-scripts/                  # 端点/能力验证脚本（verify_llm / verify_asr / test_asr_matrix / verify_skill_flow）
+scripts/                  # 端点/能力验证脚本（verify_llm / verify_responses / verify_asr / test_asr_matrix / verify_skill_flow）
 db/                       # SQLite 与上传图片（gitignore）
 data/                     # 语音输入缓存等调试数据（gitignore）
 ```
@@ -49,8 +50,8 @@ uv run web
 
 ## 技术要点
 
-- 后端通过 SSE 推送流式事件（`thinking_delta` / `content_delta` / `tool_use` / `meta` / `done`），单条消息内最多 5 轮工具调用，token 统计跨轮累加
-- LLM / ASR 均走 OpenAI 兼容协议，切换供应商只改 `.env`
+- 后端通过 SSE 推送流式事件（`thinking_delta` / `content_delta` / `tool_use` / `web_search` / `web_result` / `meta` / `done`），单条消息内最多 5 轮工具调用，token 统计跨轮累加
+- LLM 走火山方舟 Responses API（系统提示用 `instructions`，历史消息直接回放 `input`）；联网搜索为服务端工具，function 工具结果以 `function_call_output` 回放；ASR 走 OpenAI 兼容协议，切换供应商只改 `.env`
 - 本机服务调用显式绕过系统代理（`trust_env=False`）
 - `scripts/` 下的验证脚本在接入任何外部端点前先行实测其真实行为（响应格式、流式分片、错误结构），结论固化到实现中
 
