@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 import time
 import uuid
 from datetime import datetime
@@ -48,6 +49,8 @@ from web.backend.services.llm_service import (
     stream_chat,
 )
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 # agent loop 单条消息的最大工具轮数，防死循环
@@ -66,7 +69,11 @@ def _now() -> str:
 
 
 def _sse(data: dict) -> str:
-    return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+    # encode/decode 兜底：残留的未配对代理字符若不清洗，Starlette 写帧时
+    # UTF-8 严格编码会抛错并掐断连接（前端表现为无法定位的 Failed to fetch）
+    payload = json.dumps(data, ensure_ascii=False)
+    payload = payload.encode("utf-8", "replace").decode("utf-8")
+    return f"data: {payload}\n\n"
 
 
 def _row_to_message(row) -> dict:
@@ -216,6 +223,8 @@ async def _chat_event_stream(
     seen_urls: set[str] = set()
 
     def save(status: str) -> str:
+        if saved["done"]:
+            return ""  # 已落库（异常兜底路径重入防护）
         saved["done"] = True
         mid = uuid.uuid4().hex
         duration_ms = int((time.perf_counter() - start) * 1000)
@@ -308,6 +317,12 @@ async def _chat_event_stream(
         raise
     except LLMError as e:
         yield _sse({"type": "error", "message": str(e)})
+        mid = save("error")
+        yield _sse(meta_event())
+        yield _sse({"type": "done", "message_id": mid, "status": "error"})
+    except Exception as e:  # noqa: BLE001 - 任何未预期异常都不允许静默掐断 SSE
+        logger.exception("对话流未预期异常（session=%s）", session_id)
+        yield _sse({"type": "error", "message": f"服务器内部错误: {type(e).__name__}: {e}"})
         mid = save("error")
         yield _sse(meta_event())
         yield _sse({"type": "done", "message_id": mid, "status": "error"})

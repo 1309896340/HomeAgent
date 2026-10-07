@@ -217,7 +217,12 @@ async function runStream(url, body) {
       finishWith('interrupted')
     } else {
       finishWith('error')
-      toast.value = String(err.message || err)
+      const msg = String(err.message || err)
+      // "Failed to fetch" = 连接层失败（请求未到达后端），给出可行动的排查提示
+      toast.value =
+        msg === 'Failed to fetch'
+          ? '无法连接服务器：请确认后端已启动；若仍失败，检查系统代理是否拦截了 localhost（需将本地地址加入代理绕过名单）'
+          : msg
     }
   } finally {
     streaming.value = false

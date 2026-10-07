@@ -59,6 +59,18 @@ MAX_IMAGE_BYTES = 5 * 1024 * 1024
 MAX_CITATIONS = 10
 
 
+def safe_text(s: str) -> str:
+    """清除未配对代理字符（上游 JSON 的 \\udXXX 转义经 json.loads 会还原成
+    lone surrogate）。
+
+    含代理字符的字符串一旦走 UTF-8 严格编码（Starlette 写 SSE 帧、sqlite3
+    落库）即抛 UnicodeEncodeError——实测 `"\ud800".encode("utf-8")` 必炸，
+    表现为流中途连接被掐、前端只看到 "Failed to fetch"。干净文本经
+    encode/decode 往返是恒等变换，代价可忽略。
+    """
+    return s.encode("utf-8", "replace").decode("utf-8")
+
+
 def build_system_prompt(skill_manifest: list[dict[str, str]]) -> str:
     """基础人设 + 技能清单（渐进式披露第一层：只有名称与简介常驻）。"""
     if not skill_manifest:
@@ -129,24 +141,27 @@ async def stream_chat(
     seen_urls: set[str] = set()
 
     def collect_web_result(resp: dict[str, Any]) -> None:
-        """从 response.completed 的 output 提取搜索词与 url_citation 引用（T7）。"""
+        """从 response.completed 的 output 提取搜索词与 url_citation 引用（T7）。
+
+        网页标题/URL 来自外部抓取，是脏字节（含代理字符）的高发区，一律清洗。
+        """
         for item in resp.get("output") or []:
             if item.get("type") == "web_search_call":
                 q = (item.get("action") or {}).get("query")
                 if q and q not in search_queries:
-                    search_queries.append(q)
+                    search_queries.append(safe_text(q))
             elif item.get("type") == "message":
                 for part in item.get("content") or []:
                     for a in part.get("annotations") or []:
                         if a.get("type") != "url_citation":
                             continue
-                        u = a.get("url") or ""
+                        u = safe_text(a.get("url") or "")
                         if u and u not in seen_urls and len(citations) < MAX_CITATIONS:
                             seen_urls.add(u)
                             citations.append({
-                                "title": a.get("title") or u,
+                                "title": safe_text(a.get("title") or u),
                                 "url": u,
-                                "site_name": a.get("site_name") or "",
+                                "site_name": safe_text(a.get("site_name") or ""),
                             })
 
     async with httpx.AsyncClient(timeout=LLM_TIMEOUT) as client:
@@ -171,27 +186,28 @@ async def stream_chat(
                         raise LLMError(f"LLM 流内错误: {json.dumps(err, ensure_ascii=False)[:300]}")
                     elif etype == "response.output_text.delta":
                         if ev.get("delta"):
-                            yield {"type": "content_delta", "text": ev["delta"]}
+                            yield {"type": "content_delta", "text": safe_text(ev["delta"])}
                     elif etype == "response.reasoning_summary_text.delta":
                         if ev.get("delta"):
-                            yield {"type": "thinking_delta", "text": ev["delta"]}
+                            yield {"type": "thinking_delta", "text": safe_text(ev["delta"])}
                     elif etype == "response.output_item.added":
                         item = ev.get("item") or {}
                         if item.get("type") == "function_call":
                             fc_acc[ev.get("output_index", 0)] = {
-                                "id": item.get("call_id") or "",
-                                "name": item.get("name") or "",
+                                "id": safe_text(item.get("call_id") or ""),
+                                "name": safe_text(item.get("name") or ""),
                                 "arguments": "",
                             }
                         elif item.get("type") == "web_search_call":
+                            q = (item.get("action") or {}).get("query")
                             yield {"type": "web_search",
-                                   "query": (item.get("action") or {}).get("query")}
+                                   "query": safe_text(q) if q else None}
                     elif etype == "response.function_call_arguments.delta":
                         acc = fc_acc.setdefault(
                             ev.get("output_index", 0), {"id": "", "name": "", "arguments": ""}
                         )
                         if ev.get("delta"):
-                            acc["arguments"] += ev["delta"]
+                            acc["arguments"] += safe_text(ev["delta"])
                     elif etype == "response.completed":
                         finished = ev.get("response") or {}
                         u = finished.get("usage") or {}
