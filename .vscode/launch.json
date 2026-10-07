@@ -1,0 +1,46 @@
+{
+  // HomeAgent 一键启动（F5）
+  // 推荐："Web（前后端，可断点调试）"——后端走 debugpy 可打断点，
+  //       前端跑 vite dev server；浏览器访问 http://localhost:5173
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "后端 (uvicorn, 可断点调试)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "uvicorn",
+      "args": ["web.backend.app:app", "--host", "127.0.0.1", "--port", "8100"],
+      "cwd": "${workspaceFolder}",
+      "jinja": false,
+      "justMyCode": false,
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "前端 (vite dev)",
+      "type": "node-terminal",
+      "request": "launch",
+      "command": "npm run dev",
+      "cwd": "${workspaceFolder}/src/web/frontend"
+    },
+    {
+      "name": "完整编排 (uv run web, 不支持后端断点)",
+      "type": "node-terminal",
+      "request": "launch",
+      "command": "uv run web",
+      "cwd": "${workspaceFolder}",
+      // web.main 以子进程拉起 uvicorn/npm，断点需另用上面的后端配置
+      "serverReadyAction": {
+        "pattern": "前端: (https?://\\S+)",
+        "uriFormat": "%s",
+        "action": "openExternally"
+      }
+    }
+  ],
+  "compounds": [
+    {
+      "name": "Web（前后端，可断点调试）",
+      "configurations": ["后端 (uvicorn, 可断点调试)", "前端 (vite dev)"],
+      "stopAll": true
+    }
+  ]
+}
