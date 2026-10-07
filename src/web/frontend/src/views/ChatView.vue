@@ -15,7 +15,16 @@ const asrReady = ref(false)
 
 // 流式状态（当前正在生成的助手消息）
 const streaming = ref(false)
-const st = ref({ thinking: '', content: '', elapsedMs: 0, meta: null, toolUses: [] })
+const st = ref({
+  thinking: '',
+  content: '',
+  elapsedMs: 0,
+  meta: null,
+  toolUses: [],
+  searching: false, // 服务端正在联网搜索
+  searchQueries: [], // 已完成的搜索词（仅当前视图内存）
+  citations: [], // 联网搜索引用（随消息落库）
+})
 let abortCtl = null
 let timer = null
 
@@ -111,18 +120,23 @@ async function ensureSession() {
   return s.id
 }
 
-async function send({ content, images }) {
+async function send({ content, images, webSearch }) {
   const sid = await ensureSession()
   messages.value.push({
     id: `local-${Date.now()}`,
     role: 'user',
     content,
     images,
+    web_search: !!webSearch,
     status: 'complete',
   })
   pinned = true
   await nextTick(scrollBottom)
-  await runStream(`/chat/sessions/${sid}/messages`, { content, images })
+  await runStream(`/chat/sessions/${sid}/messages`, {
+    content,
+    images,
+    web_search: !!webSearch,
+  })
 }
 
 async function regenerate() {
@@ -132,21 +146,32 @@ async function regenerate() {
 
 async function runStream(url, body) {
   streaming.value = true
-  st.value = { thinking: '', content: '', elapsedMs: 0, meta: null, toolUses: [] }
+  st.value = {
+    thinking: '',
+    content: '',
+    elapsedMs: 0,
+    meta: null,
+    toolUses: [],
+    searching: false,
+    searchQueries: [],
+    citations: [],
+  }
   abortCtl = new AbortController()
   startTimer()
   await nextTick(scrollBottom)
 
   const finishWith = (status) => {
-    const { thinking, content, meta, toolUses } = st.value
-    if (thinking || content || toolUses.length || status !== 'interrupted') {
+    const { thinking, content, meta, toolUses, searchQueries, citations } = st.value
+    if (thinking || content || toolUses.length || citations.length || status !== 'interrupted') {
       messages.value.push({
         id: meta?.message_id || `local-a-${Date.now()}`,
         role: 'assistant',
         content,
         thinking: thinking || null,
-        // v1 工具调用不落库，仅本会话视图内保留（刷新后消失）
+        // v1 工具调用/搜索词不落库，仅本会话视图内保留（刷新后消失）；引用落库
         toolUses: [...toolUses],
+        searchQueries: [...searchQueries],
+        citations: [...citations],
         duration_ms: meta?.duration_ms ?? st.value.elapsedMs,
         prompt_tokens: meta?.prompt_tokens ?? null,
         completion_tokens: meta?.completion_tokens ?? null,
@@ -166,6 +191,14 @@ async function runStream(url, body) {
           st.value.content += ev.text
         } else if (ev.type === 'tool_use') {
           st.value.toolUses.push({ name: ev.name, args: ev.args })
+        } else if (ev.type === 'web_search') {
+          st.value.searching = true
+        } else if (ev.type === 'web_result') {
+          st.value.searching = false
+          st.value.searchQueries.push(...(ev.queries || []))
+          for (const c of ev.citations || []) {
+            if (!st.value.citations.some((x) => x.url === c.url)) st.value.citations.push(c)
+          }
         } else if (ev.type === 'meta') {
           st.value.meta = { ...st.value.meta, ...ev }
         } else if (ev.type === 'error') {
@@ -188,6 +221,7 @@ async function runStream(url, body) {
     }
   } finally {
     streaming.value = false
+    st.value.searching = false
     stopTimer()
     abortCtl = null
     loadSessions() // 标题可能已随首条消息更新
@@ -310,6 +344,9 @@ const vFocus = { mounted: (el) => el.focus() }
               content: st.content,
               thinking: st.thinking || null,
               toolUses: st.toolUses,
+              searching: st.searching,
+              searchQueries: st.searchQueries,
+              citations: st.citations,
               status: 'complete',
             }"
             :streaming="true"

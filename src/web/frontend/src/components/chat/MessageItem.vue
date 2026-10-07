@@ -83,6 +83,37 @@ function toolLabel(t) {
 
       <!-- 助手消息 -->
       <template v-else>
+        <!-- 联网搜索状态徽标：搜索中 → 动画提示；有搜索词 → 逐个展示 -->
+        <div
+          v-if="(msg.searching && !msg.searchQueries?.length) || msg.searchQueries?.length"
+          class="mb-2 flex flex-wrap gap-1.5"
+        >
+          <span
+            v-if="msg.searching && !msg.searchQueries?.length"
+            class="inline-flex items-center gap-1 rounded-full border border-line bg-canvas-subtle px-2 py-0.5 text-xs text-fg-muted"
+          >
+            <svg class="h-3 w-3 animate-pulse" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10" />
+              <path d="M2 12h20" />
+              <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+            </svg>
+            正在联网搜索…
+          </span>
+          <span
+            v-for="(q, i) in msg.searchQueries || []"
+            :key="`q-${i}`"
+            class="inline-flex max-w-full items-center gap-1 rounded-full border border-line bg-canvas-subtle px-2 py-0.5 text-xs text-fg-muted"
+            :title="q"
+          >
+            <svg class="h-3 w-3 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10" />
+              <path d="M2 12h20" />
+              <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+            </svg>
+            <span class="truncate">{{ q }}</span>
+          </span>
+        </div>
+
         <!-- 工具调用徽标 -->
         <div v-if="msg.toolUses?.length" class="mb-2 flex flex-wrap gap-1.5">
           <span
@@ -114,6 +145,26 @@ function toolLabel(t) {
           正在思考<span class="animate-pulse">…</span>
         </div>
         <span v-if="streaming && msg.content" class="inline-block h-4 w-2 animate-pulse bg-accent align-text-bottom"></span>
+
+        <!-- 联网搜索参考来源（流式与落库消息均展示） -->
+        <div v-if="msg.citations?.length" class="mt-2 rounded-md border border-line bg-canvas-subtle px-3 py-2 text-xs">
+          <div class="mb-1 flex items-center gap-1 font-medium text-fg-muted">
+            <svg class="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10" />
+              <path d="M2 12h20" />
+              <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+            </svg>
+            参考来源
+          </div>
+          <ol class="list-decimal space-y-0.5 pl-4 text-fg-muted">
+            <li v-for="(c, i) in msg.citations" :key="`c-${i}`" class="break-words">
+              <a :href="c.url" target="_blank" rel="noopener noreferrer" class="transition hover:text-accent">
+                {{ c.title }}
+              </a>
+              <span v-if="c.site_name" class="text-fg-subtle"> · {{ c.site_name }}</span>
+            </li>
+          </ol>
+        </div>
 
         <!-- 错误提示条 -->
         <div v-if="msg.status === 'error'" class="mt-2 rounded-md border border-danger-subtle bg-danger-subtle px-3 py-2 text-xs text-danger">

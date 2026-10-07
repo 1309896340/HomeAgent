@@ -12,6 +12,7 @@ const emit = defineEmits(['send', 'stop'])
 
 const text = ref('')
 const images = ref([]) // [{ dataUrl, name, size }]
+const webSearch = ref(false) // 联网搜索开关（随消息提交）
 const fileInput = ref(null)
 const audioInput = ref(null)
 const ta = ref(null)
@@ -25,7 +26,11 @@ function doSend() {
   if (props.disabled || props.streaming) return
   const content = text.value.trim()
   if (!content && images.value.length === 0) return
-  emit('send', { content, images: images.value.map((i) => i.dataUrl) })
+  emit('send', {
+    content,
+    images: images.value.map((i) => i.dataUrl),
+    webSearch: webSearch.value,
+  })
   text.value = ''
   images.value = []
   autoSize()
@@ -228,6 +233,20 @@ onUnmounted(() => {
     <div class="mx-auto flex max-w-3xl items-end gap-2 rounded-lg border border-line bg-canvas p-2 shadow-sm focus-within:border-fg-subtle">
       <!-- 工具列 -->
       <div class="flex items-center gap-1">
+        <button
+          class="flex h-8 items-center justify-center gap-1 rounded-md px-2 text-fg-muted transition hover:bg-canvas-subtle disabled:opacity-40"
+          :class="webSearch ? 'bg-accent-subtle text-accent hover:bg-accent-subtle' : ''"
+          :title="webSearch ? '联网搜索：已开启（点击关闭）' : '联网搜索：已关闭（点击开启）'"
+          :disabled="disabled || streaming"
+          @click="webSearch = !webSearch"
+        >
+          <svg class="h-4.5 w-4.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10" />
+            <path d="M2 12h20" />
+            <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+          </svg>
+          <span class="text-xs">联网</span>
+        </button>
         <button
           class="flex h-8 w-8 items-center justify-center rounded-md text-fg-muted transition hover:bg-canvas-subtle hover:text-fg-default disabled:opacity-40"
           title="添加图片（也可粘贴 / 拖拽）"
