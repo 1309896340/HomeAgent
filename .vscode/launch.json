@@ -27,13 +27,7 @@
       "type": "node-terminal",
       "request": "launch",
       "command": "uv run web",
-      "cwd": "${workspaceFolder}",
-      // web.main 以子进程拉起 uvicorn/npm，断点需另用上面的后端配置
-      "serverReadyAction": {
-        "pattern": "前端: (https?://\\S+)",
-        "uriFormat": "%s",
-        "action": "openExternally"
-      }
+      "cwd": "${workspaceFolder}"
     }
   ],
   "compounds": [
