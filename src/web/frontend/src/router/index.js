@@ -3,7 +3,7 @@ import { createRouter, createWebHistory } from 'vue-router'
 import { useAuth } from '../stores/auth.js'
 import DashboardView from '../views/DashboardView.vue'
 import ChatView from '../views/ChatView.vue'
-import PlaceholderView from '../views/PlaceholderView.vue'
+import DiscoverView from '../views/DiscoverView.vue'
 import LoginView from '../views/LoginView.vue'
 import SettingsView from '../views/SettingsView.vue'
 import UserManagementView from '../views/settings/UserManagementView.vue'
@@ -20,11 +20,6 @@ export const mainTabs = [
     path: '/chat',
     title: '对话',
     icon: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
-  },
-  {
-    path: '/devices',
-    title: '设备',
-    icon: '<rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M9 1v3M15 1v3M9 20v3M15 20v3M1 9h3M1 15h3M20 9h3M20 15h3"/>',
   },
   {
     path: '/settings',
@@ -45,10 +40,10 @@ const router = createRouter({
     },
     { path: '/chat', component: ChatView, meta: { title: '对话' } },
     {
-      path: '/devices',
-      component: PlaceholderView,
-      props: { title: '设备', description: '家庭设备接入与控制面板，规划中。' },
-      meta: { title: '设备' },
+      // 设备配对：从仪表盘进入，蓝牙配对式的发现→勾选→注册流程
+      path: '/discover',
+      component: DiscoverView,
+      meta: { title: '设备配对' },
     },
     {
       path: '/settings',

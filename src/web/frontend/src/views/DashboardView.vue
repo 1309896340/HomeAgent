@@ -1,186 +1,307 @@
 <script setup>
-// 仪表盘（demo 静态数据，后续接后端 API）
+// 仪表盘：已注册内网设备列表（在线状态 + 端口三级展开）
+// 进入页面静默刷新一轮在线状态，停留期间按后端下发的间隔定时轮询
+import { ref, onMounted, onUnmounted } from 'vue'
+import { useRouter } from 'vue-router'
+import { get, patch, del } from '../api/client.js'
 import { useAuth } from '../stores/auth.js'
 
+const router = useRouter()
 const auth = useAuth()
 const greetingName = () => auth.displayName.value || '朋友'
 
-const stats = [
-  {
-    label: '设备在线',
-    value: '12 / 14',
-    trend: '2 台离线',
-    trendType: 'attention',
-    icon: 'M13 2 3 14h7l-1 8 10-12h-7l1-8z', // zap
-  },
-  {
-    label: '自动化任务',
-    value: '8',
-    trend: '本周新增 1 个',
-    trendType: 'success',
-    icon: 'M4 7h11M4 12h11M4 17h11M18 5v4M18 15v4M16 7h4M16 17h4', // sliders
-  },
-  {
-    label: '今日语音指令',
-    value: '23',
-    trend: '较昨日 +15%',
-    trendType: 'success',
-    icon: 'M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3zM19 10v2a7 7 0 0 1-14 0v-2M12 19v3', // mic
-  },
-  {
-    label: '未读消息',
-    value: '5',
-    trend: '3 条来自门锁',
-    trendType: 'default',
-    icon: 'M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z', // message
-  },
-]
+const devices = ref([])
+const loading = ref(true)
+const error = ref('')
+const pingInterval = ref(5)
+let timer = null
 
-const weekCommands = [
-  { day: '周一', count: 12 },
-  { day: '周二', count: 18 },
-  { day: '周三', count: 9 },
-  { day: '周四', count: 24 },
-  { day: '周五', count: 31 },
-  { day: '周六', count: 15 },
-  { day: '周日', count: 22 },
-]
-const maxCount = Math.max(...weekCommands.map((d) => d.count))
+// 三级展开状态：展开的设备 id 集合 / 设备内展开的端口 key 集合
+const expandedDevices = ref(new Set())
+const expandedPorts = ref(new Set())
+const renamingId = ref(null)
+const renameValue = ref('')
 
-const services = [
-  { name: '后端 API', detail: 'http://localhost:8000', status: 'running' },
-  { name: 'ASR 语音识别', detail: 'faster-whisper', status: 'running' },
-  { name: 'MQTT Broker', detail: 'mqtt://home.local:1883', status: 'running' },
-  { name: '消息队列', detail: '重连中 · 第 3 次尝试', status: 'degraded' },
-]
-
-const activities = [
-  { time: '10:24', text: '语音指令「打开客厅灯」执行成功', scene: '客厅', type: 'success' },
-  { time: '09:57', text: '自动化「离家模式」触发，关闭全部灯光', scene: '全屋', type: 'default' },
-  { time: '09:30', text: '大门传感器离线超过 10 分钟', scene: '门厅', type: 'attention' },
-  { time: '08:12', text: '扫地机器人完成任务，返回充电座', scene: '全屋', type: 'default' },
-  { time: '07:45', text: '自动化「早安模式」触发，播放天气预报', scene: '卧室', type: 'default' },
-]
-
-const trendClass = {
-  success: 'text-success',
-  attention: 'text-attention',
-  default: 'text-fg-muted',
+const scanBadge = {
+  pending: { text: '端口扫描排队中', cls: 'text-fg-muted' },
+  running: { text: '端口扫描中…', cls: 'text-attention' },
+  failed: { text: '端口扫描失败', cls: 'text-danger' },
+  unavailable: { text: '端口扫描不可用（未安装 nmap）', cls: 'text-fg-muted' },
 }
 
-const serviceDot = {
-  running: 'bg-success',
-  degraded: 'bg-attention',
-  down: 'bg-danger',
+async function loadDevices() {
+  error.value = ''
+  try {
+    devices.value = await get('/devices')
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    loading.value = false
+  }
 }
 
-const activityDot = {
-  success: 'bg-success',
-  attention: 'bg-attention',
-  default: 'bg-fg-subtle',
+async function refreshStatus() {
+  try {
+    const data = await get('/devices/status')
+    pingInterval.value = data.ping_interval
+    const byId = new Map(data.devices.map((d) => [d.id, d]))
+    for (const d of devices.value) {
+      const s = byId.get(d.id)
+      if (s) d.status = s.status
+    }
+  } catch {
+    // 状态轮询失败不打断页面，下一轮再试
+  }
+}
+
+function startPolling() {
+  stopPolling()
+  timer = setInterval(refreshStatus, pingInterval.value * 1000)
+}
+
+function stopPolling() {
+  if (timer) clearInterval(timer)
+  timer = null
+}
+
+function toggleDevice(id) {
+  const s = expandedDevices.value
+  s.has(id) ? s.delete(id) : s.add(id)
+}
+
+function togglePort(key) {
+  const s = expandedPorts.value
+  s.has(key) ? s.delete(key) : s.add(key)
+}
+
+function portKey(deviceId, port, protocol) {
+  return `${deviceId}:${protocol}:${port}`
+}
+
+function portSummary(d) {
+  if (['pending', 'running'].includes(d.scan_status)) return null
+  return d.ports.filter((p) => p.protocol === 'tcp').length
+}
+
+async function submitRename(d) {
+  const name = renameValue.value.trim()
+  if (!name || name === d.name) {
+    renamingId.value = null
+    return
+  }
+  try {
+    const updated = await patch(`/devices/${d.id}`, { name })
+    Object.assign(d, updated)
+  } catch (e) {
+    error.value = e.message
+  }
+  renamingId.value = null
+}
+
+function startRename(d) {
+  renamingId.value = d.id
+  renameValue.value = d.name
+}
+
+async function removeDevice(d) {
+  if (!confirm(`确定移除设备「${d.name}」（${d.ip}）的注册？`)) return
+  try {
+    await del(`/devices/${d.id}`)
+    devices.value = devices.value.filter((x) => x.id !== d.id)
+  } catch (e) {
+    error.value = e.message
+  }
+}
+
+onMounted(async () => {
+  await loadDevices()
+  await refreshStatus()
+  startPolling()
+})
+onUnmounted(stopPolling)
+</script>
+
+<script>
+// 行内重命名输入框的自动聚焦指令
+export default {
+  directives: {
+    focus: {
+      mounted(el) {
+        el.focus()
+        el.select()
+      },
+    },
+  },
 }
 </script>
 
 <template>
-  <div class="space-y-6">
+  <div class="mx-auto max-w-7xl space-y-6 px-4 py-6 lg:px-6">
     <!-- 页头 -->
     <div class="flex flex-wrap items-end justify-between gap-3">
       <div>
         <h1 class="text-2xl font-semibold tracking-tight">仪表盘</h1>
-        <p class="mt-1 text-sm text-fg-muted">早上好，{{ greetingName() }}。以下是你的家庭概况。</p>
+        <p class="mt-1 text-sm text-fg-muted">你好，{{ greetingName() }}。以下是已注册的内网设备。</p>
       </div>
       <div class="flex gap-2">
         <button
           class="rounded-md border border-line bg-canvas px-3 py-1.5 text-sm font-medium text-fg-default transition hover:bg-canvas-subtle"
+          @click="loadDevices(); refreshStatus()"
         >
           刷新
         </button>
         <button
           class="rounded-md border border-accent-emphasis bg-accent px-3 py-1.5 text-sm font-medium text-white transition hover:bg-accent-emphasis/90"
+          @click="router.push('/discover')"
         >
-          新建自动化
+          添加设备
         </button>
       </div>
     </div>
 
-    <!-- 统计卡片 -->
-    <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-      <div
-        v-for="stat in stats"
-        :key="stat.label"
-        class="rounded-lg border border-line bg-canvas p-4 shadow-sm"
+    <p v-if="error" class="rounded-md border border-danger-emphasis bg-danger-subtle px-3 py-2 text-sm text-danger">
+      {{ error }}
+    </p>
+
+    <!-- 空状态 -->
+    <div
+      v-if="!loading && devices.length === 0"
+      class="rounded-lg border border-dashed border-line bg-canvas p-10 text-center"
+    >
+      <p class="text-sm text-fg-muted">还没有已注册的设备。</p>
+      <button
+        class="mt-4 rounded-md border border-accent-emphasis bg-accent px-3 py-1.5 text-sm font-medium text-white transition hover:bg-accent-emphasis/90"
+        @click="router.push('/discover')"
       >
-        <div class="flex items-center justify-between">
-          <span class="text-sm text-fg-muted">{{ stat.label }}</span>
-          <span class="flex h-8 w-8 items-center justify-center rounded-md bg-accent-subtle">
-            <svg
-              class="h-4 w-4 text-accent"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            >
-              <path :d="stat.icon" />
-            </svg>
-          </span>
-        </div>
-        <div class="mt-2 text-3xl font-semibold tabular-nums">{{ stat.value }}</div>
-        <div class="mt-1 text-xs" :class="trendClass[stat.trendType]">{{ stat.trend }}</div>
-      </div>
+        添加设备
+      </button>
     </div>
 
-    <!-- 图表 + 服务状态 -->
-    <div class="grid gap-4 lg:grid-cols-3">
-      <section class="rounded-lg border border-line bg-canvas p-5 shadow-sm lg:col-span-2">
-        <div class="flex items-center justify-between">
-          <h2 class="font-semibold">近 7 日语音指令</h2>
-          <span class="text-xs text-fg-muted">共 131 次</span>
-        </div>
-        <div class="mt-6 flex h-44 items-end gap-3">
-          <div v-for="d in weekCommands" :key="d.day" class="flex h-full flex-1 flex-col items-center justify-end gap-2">
-            <span class="text-xs text-fg-muted tabular-nums">{{ d.count }}</span>
-            <div
-              class="w-full rounded-t-md transition-all"
-              :class="d.count === maxCount ? 'bg-accent' : 'bg-accent/40'"
-              :style="{ height: `${(d.count / maxCount) * 100}%` }"
-              :title="`${d.day}：${d.count} 次`"
-            ></div>
-            <span class="text-xs text-fg-muted">{{ d.day }}</span>
-          </div>
-        </div>
-      </section>
-
-      <section class="rounded-lg border border-line bg-canvas p-5 shadow-sm">
-        <h2 class="font-semibold">服务状态</h2>
-        <ul class="mt-4 space-y-3">
-          <li v-for="s in services" :key="s.name" class="flex items-start gap-3">
-            <span class="mt-1.5 h-2 w-2 shrink-0 rounded-full" :class="serviceDot[s.status]"></span>
-            <div class="min-w-0">
-              <div class="text-sm font-medium">{{ s.name }}</div>
-              <div class="truncate text-xs text-fg-muted">{{ s.detail }}</div>
-            </div>
-          </li>
-        </ul>
-        <div class="mt-5 rounded-md border border-attention-subtle bg-attention-subtle px-3 py-2 text-xs text-attention">
-          消息队列正在重连，暂不影响本地控制。
-        </div>
-      </section>
-    </div>
-
-    <!-- 最近活动 -->
-    <section class="rounded-lg border border-line bg-canvas shadow-sm">
+    <!-- 设备列表 -->
+    <section v-else class="rounded-lg border border-line bg-canvas shadow-sm">
       <div class="flex items-center justify-between border-b border-line-muted px-5 py-3">
-        <h2 class="font-semibold">最近活动</h2>
-        <a href="#" class="text-sm text-accent hover:underline">查看全部</a>
+        <h2 class="font-semibold">已注册设备（{{ devices.length }}）</h2>
+        <span class="text-xs text-fg-muted">每 {{ pingInterval }} 秒自动刷新在线状态</span>
       </div>
-      <ul class="divide-y divide-line-muted">
-        <li v-for="a in activities" :key="a.time + a.text" class="flex items-center gap-3 px-5 py-3 text-sm">
-          <span class="h-1.5 w-1.5 shrink-0 rounded-full" :class="activityDot[a.type]"></span>
-          <span class="flex-1">{{ a.text }}</span>
-          <span class="hidden text-xs text-fg-muted sm:inline">{{ a.scene }}</span>
-          <span class="w-12 text-right text-xs text-fg-subtle tabular-nums">{{ a.time }}</span>
+
+      <div v-if="loading" class="px-5 py-8 text-center text-sm text-fg-muted">加载中…</div>
+      <ul v-else class="divide-y divide-line-muted">
+        <li v-for="d in devices" :key="d.id">
+          <!-- 一级：设备行 -->
+          <div class="flex items-center gap-3 px-5 py-3">
+            <button
+              class="flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-muted transition hover:bg-canvas-subtle"
+              :title="expandedDevices.has(d.id) ? '收起端口' : '展开端口'"
+              @click="toggleDevice(d.id)"
+            >
+              <svg
+                class="h-4 w-4 transition-transform"
+                :class="{ 'rotate-90': expandedDevices.has(d.id) }"
+                viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+              >
+                <polyline points="9 18 15 12 9 6" />
+              </svg>
+            </button>
+
+            <span class="flex items-center gap-1.5 text-xs" :title="d.status === 'online' ? '在线' : '离线'">
+              <span class="h-2 w-2 rounded-full" :class="d.status === 'online' ? 'bg-success' : 'bg-fg-subtle'"></span>
+              <span :class="d.status === 'online' ? 'text-success' : 'text-fg-muted'">
+                {{ d.status === 'online' ? '在线' : '离线' }}
+              </span>
+            </span>
+
+            <template v-if="renamingId === d.id">
+              <input
+                v-model="renameValue"
+                v-focus
+                class="w-40 rounded-md border border-accent px-2 py-0.5 text-sm"
+                @keyup.enter="submitRename(d)"
+                @blur="submitRename(d)"
+                @keyup.esc="renamingId = null"
+              />
+            </template>
+            <template v-else>
+              <span class="text-sm font-medium" @dblclick="startRename(d)">{{ d.name }}</span>
+              <button
+                class="text-fg-subtle transition hover:text-fg-default"
+                title="重命名"
+                @click="startRename(d)"
+              >
+                <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" />
+                </svg>
+              </button>
+            </template>
+
+            <span class="font-mono text-sm text-fg-muted">{{ d.ip }}</span>
+            <span v-if="d.vendor" class="hidden text-xs text-fg-subtle sm:inline">{{ d.vendor }}</span>
+
+            <span class="ml-auto flex items-center gap-3">
+              <span v-if="scanBadge[d.scan_status]" class="text-xs" :class="scanBadge[d.scan_status].cls">
+                {{ scanBadge[d.scan_status].text }}
+              </span>
+              <span v-else-if="portSummary(d) !== null" class="text-xs text-fg-muted">
+                {{ portSummary(d) }} 个开放端口
+              </span>
+              <button
+                class="text-fg-subtle transition hover:text-danger"
+                title="移除注册"
+                @click="removeDevice(d)"
+              >
+                <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <polyline points="3 6 5 6 21 6" />
+                  <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                </svg>
+              </button>
+            </span>
+          </div>
+
+          <!-- 二级：端口列表 -->
+          <div v-if="expandedDevices.has(d.id)" class="border-t border-line-muted bg-canvas-subtle/60 px-5 py-3">
+            <div v-if="['pending', 'running'].includes(d.scan_status)" class="py-2 text-sm text-attention">
+              端口扫描中，完成后此处显示开放端口…
+            </div>
+            <div v-else-if="d.scan_status === 'unavailable'" class="py-2 text-sm text-fg-muted">
+              端口扫描不可用：服务器未安装 nmap。安装后重新注册或等待后续扫描可获得端口信息。
+            </div>
+            <div v-else-if="d.scan_status === 'failed'" class="py-2 text-sm text-danger">
+              端口扫描失败，可在「添加设备」页重新触发或检查 nmap 安装。
+            </div>
+            <div v-else-if="d.ports.length === 0" class="py-2 text-sm text-fg-muted">
+              未发现开放端口（top 1000 常用端口）。
+            </div>
+            <ul v-else class="divide-y divide-line-muted rounded-md border border-line bg-canvas">
+              <li v-for="p in d.ports" :key="portKey(d.id, p.port, p.protocol)">
+                <!-- 端口行：端口号 + 服务名摘要 -->
+                <button
+                  v-if="p.version"
+                  class="flex w-full items-center gap-3 px-4 py-2 text-left transition hover:bg-canvas-subtle"
+                  @click="togglePort(portKey(d.id, p.port, p.protocol))"
+                >
+                  <svg
+                    class="h-3.5 w-3.5 shrink-0 text-fg-subtle transition-transform"
+                    :class="{ 'rotate-90': expandedPorts.has(portKey(d.id, p.port, p.protocol)) }"
+                    viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+                  >
+                    <polyline points="9 18 15 12 9 6" />
+                  </svg>
+                  <span class="w-20 font-mono text-sm">{{ p.port }}/{{ p.protocol }}</span>
+                  <span class="text-sm">{{ p.service || '未知服务' }}</span>
+                </button>
+                <div v-else class="flex items-center gap-3 px-4 py-2">
+                  <span class="w-3.5 shrink-0"></span>
+                  <span class="w-20 font-mono text-sm">{{ p.port }}/{{ p.protocol }}</span>
+                  <span class="text-sm">{{ p.service || '未知服务' }}</span>
+                </div>
+
+                <!-- 三级：服务详情 -->
+                <div v-if="p.version && expandedPorts.has(portKey(d.id, p.port, p.protocol))"
+                     class="border-t border-line-muted bg-canvas-subtle px-4 py-2 pl-11 text-xs text-fg-muted">
+                  {{ p.version }}
+                </div>
+              </li>
+            </ul>
+          </div>
         </li>
       </ul>
     </section>
