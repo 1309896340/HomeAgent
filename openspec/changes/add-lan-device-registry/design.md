@@ -29,7 +29,7 @@
 
 ### D3. 端口扫描 = 注册后异步线程，nmap top 1000
 
-- 注册动作立即返回（不阻塞等待扫描）；后端起一个 daemon 线程对该设备执行 `nmap -T4 --top-ports 1000 <ip> -oX -`（XML 输出解析，避免解析文本表格）。
+- 注册动作立即返回（不阻塞等待扫描）；后端起一个 daemon 线程对该设备执行 `nmap -sV -T4 --top-ports 1000 <ip> -oX -`（XML 输出解析，-sV 探测服务版本，避免解析文本表格）。
 - 设备表带 `scan_status` 状态机：`pending → running → done / failed`。前端仪表盘与配对完成页据此显示"端口扫描中…"占位，扫描完成后端口数据落库展示。
 - nmap 可执行检测在启动时进行：优先 `NMAP_PATH`（.env），否则查 PATH。缺失时启动打 warning，配对流程不受影响（仍可 ping 发现与注册），设备详情显示"端口扫描不可用（未安装 nmap）"。
 - 当前开发机未装 nmap（已实测 `nmap` 不在 PATH），故"缺失降级"是必经路径而非边缘 case。
