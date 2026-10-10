@@ -1,0 +1,39 @@
+schema: spec-driven
+
+# Project context (optional)
+# This is shown to AI when creating artifacts.
+# Add your tech stack, conventions, style guides, domain knowledge, etc.
+# Example:
+#   context: |
+#     Tech stack: TypeScript, React, Node.js
+#     We use conventional commits
+#     Domain: e-commerce platform
+context: |
+  项目：HomeAgent —— 局域网设备管理 Agent（已从"智能家居"重定位，commit a4997a7）。
+  技术栈：Python 3.12+（uv 管理）、FastAPI、SQLite、Vue3 + Vite + Tailwind v4（GitHub Primer 风格）、SSE 流式。
+  入口：`uv run web` 一键启动（后端 8100 / 前端 5173）。
+  目录：src/web/backend、src/web/frontend、skills/、scripts/。
+  惯例：提交信息用 Conventional Commits 中文描述；scripts/ 下先写验证脚本再接外部端点；
+  本机服务调用显式 trust_env=False 绕过系统代理；部署环境为家中服务器（Windows），LLM 走火山方舟 Responses API。
+
+# Per-artifact rules (optional)
+# Add custom rules for specific artifacts.
+# Example:
+#   rules:
+#     proposal:
+#       - Keep proposals under 500 words
+#       - Always include a "Non-goals" section
+#     tasks:
+#       - Break tasks into chunks of max 2 hours
+
+# Per-operation guidance (optional)
+# Add advisory guidance for how apply and archive work should be conducted.
+# This is separate from artifact rules above.
+# Example:
+#   operations:
+#     apply:
+#       guidance:
+#         - Keep test summaries concise
+#     archive:
+#       guidance:
+#         - Summarize the archive outcome before finishing
