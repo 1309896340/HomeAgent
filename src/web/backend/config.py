@@ -27,6 +27,22 @@ class ASRSettings(BaseModel):
     base_url: str = "http://127.0.0.1:12301/v1"
 
 
+class LANSettings(BaseModel):
+    """局域网设备管理配置（网段回退值 / 状态轮询间隔 / nmap 路径）。"""
+
+    # 网段自动检测失败时的回退值（正常情况检测结果覆盖此配置）
+    network: str = "192.168.3.0/24"
+    # 仪表盘在线状态轮询间隔（秒），低于 1 按 1 处理
+    ping_interval: int = 5
+    # nmap 可执行文件路径；留空则按 PATH 查找
+    nmap_path: str = ""
+
+    @property
+    def effective_ping_interval(self) -> int:
+        """轮询间隔下限 clamp（秒），防止误配 0/负值造成死循环。"""
+        return max(1, self.ping_interval)
+
+
 class Settings(BaseSettings):
     """后端运行配置。
 
@@ -45,6 +61,7 @@ class Settings(BaseSettings):
 
     llm: LLMSettings = LLMSettings()
     asr: ASRSettings = ASRSettings()
+    lan: LANSettings = LANSettings()
 
     @property
     def db_dir(self) -> Path:

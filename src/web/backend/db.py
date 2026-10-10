@@ -68,6 +68,35 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, created_at);
+
+-- 局域网设备注册表：以 IP 为注册粒度（设备换 IP 视为新设备）
+CREATE TABLE IF NOT EXISTS devices (
+    id            INTEGER PRIMARY KEY,
+    name          TEXT NOT NULL,
+    ip            TEXT NOT NULL UNIQUE,
+    mac           TEXT,
+    hostname      TEXT,
+    vendor        TEXT,
+    status        TEXT NOT NULL DEFAULT 'offline'
+                  CHECK (status IN ('online', 'offline')),
+    scan_status   TEXT NOT NULL DEFAULT 'pending'
+                  CHECK (scan_status IN ('pending', 'running', 'done', 'failed', 'unavailable')),
+    registered_at TEXT NOT NULL,
+    last_seen     TEXT
+);
+
+-- 设备开放端口（nmap top 1000 扫描结果，随设备级联删除）
+CREATE TABLE IF NOT EXISTS device_ports (
+    id        INTEGER PRIMARY KEY,
+    device_id INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    port      INTEGER NOT NULL,
+    protocol  TEXT NOT NULL DEFAULT 'tcp',
+    service   TEXT,
+    version   TEXT,
+    UNIQUE(device_id, port, protocol)
+);
+
+CREATE INDEX IF NOT EXISTS idx_device_ports_device ON device_ports(device_id);
 """
 
 SEED_ROLES = ("admin", "member", "guest")
