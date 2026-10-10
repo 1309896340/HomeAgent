@@ -1,7 +1,7 @@
 [project]
 name = "homeagent"
 version = "0.1.0"
-description = "Add your description here"
+description = "局域网设备管理 Agent：Web 控制台 + LLM 对话 + 技能扩展 + 语音识别，面向内网设备发现与自动化管理"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
