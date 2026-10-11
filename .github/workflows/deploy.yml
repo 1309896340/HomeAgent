@@ -14,7 +14,7 @@
 #   Variables:  SSH_HOST(服务器IP/域名)、SSH_USER(登录用户，建议 root 或
 #               docker 组用户)、SSH_PORT(可选，默认 22)、
 #               DEPLOY_DIR(可选，服务器上代码目录，默认 /opt/homeagent)
-#   Secrets:    SSH_PRIVATE_KEY(私钥全文，公钥需加入服务器 authorized_keys)
+#   Secrets:    SSH_KEY(私钥全文，公钥需加入服务器 authorized_keys)
 #
 # 一次性准备 —— 服务器（Linux + Docker）：
 #   1. 已安装 Docker Engine 与 docker compose v2 插件、git、curl
@@ -92,14 +92,14 @@ jobs:
         env:
           HAS_SSH_HOST: ${{ vars.SSH_HOST != '' }}
           HAS_SSH_USER: ${{ vars.SSH_USER != '' }}
-          HAS_SSH_KEY: ${{ secrets.SSH_PRIVATE_KEY != '' }}
+          HAS_SSH_KEY: ${{ secrets.SSH_KEY != '' }}
           SSH_PORT: ${{ vars.SSH_PORT || '22' }}
         run: |
           set -euo pipefail
           ok=1
           [ "$HAS_SSH_HOST" = "true" ] || { echo "::error::缺少仓库变量 SSH_HOST（服务器地址）"; ok=0; }
           [ "$HAS_SSH_USER" = "true" ] || { echo "::error::缺少仓库变量 SSH_USER（登录用户）"; ok=0; }
-          [ "$HAS_SSH_KEY"  = "true" ] || { echo "::error::缺少仓库密钥 SSH_PRIVATE_KEY（私钥全文）"; ok=0; }
+          [ "$HAS_SSH_KEY"  = "true" ] || { echo "::error::缺少仓库密钥 SSH_KEY（私钥全文）"; ok=0; }
           [ "$ok" = "1" ] || exit 1
           echo "✓ 变量与密钥齐备，目标 ${{ vars.SSH_USER }}@${{ vars.SSH_HOST }}:${SSH_PORT} 目录=${DEPLOY_DIR}"
 
@@ -109,7 +109,7 @@ jobs:
           host: ${{ vars.SSH_HOST }}
           port: ${{ vars.SSH_PORT || '22' }}
           username: ${{ vars.SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          key: ${{ secrets.SSH_KEY }}
           script_stop: true # 每条命令失败即停，与脚本内 set -e 双保险
           envs: REPO_URL,GIT_REF,DEPLOY_DIR
           script: |
