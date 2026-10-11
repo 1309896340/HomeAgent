@@ -1,0 +1,48 @@
+# ============================================================
+# HomeAgent 前端 nginx 配置模板
+# 官方 nginx 镜像入口会把 /etc/nginx/templates/*.template 做 envsubst
+# 后写入 conf.d/，仅替换已定义的环境变量（$uri 等 nginx 变量不受影响）。
+#
+# 环境变量（由 docker-compose.yml 注入，均取自 .env）：
+#   NGINX_PORT   - nginx 监听端口（默认 80）
+#   BACKEND_PORT - 后端端口（默认 8000；backend 与本容器同为 host 网络）
+# ============================================================
+
+server {
+    listen ${NGINX_PORT};
+    server_name _;
+
+    # Vite 构建产物（Dockerfile 已拷贝）
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # 对话图片上传体积上限
+    client_max_body_size 20m;
+
+    gzip on;
+    gzip_types text/css application/javascript application/json image/svg+xml;
+    gzip_min_length 1024;
+
+    # API 反代：location 末尾的 "/" 会剥离 /api 前缀，
+    # 与 Vite 开发代理行为一致（前端请求 /api/xxx → 后端 /xxx）
+    location /api/ {
+        proxy_pass http://127.0.0.1:${BACKEND_PORT}/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # 聊天回复是 SSE 流式（text/event-stream）：必须关缓冲，否则逐句卡顿
+        proxy_buffering off;
+        proxy_cache off;
+        # 长对话/慢生成不给掐断
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+
+    # vue-router 使用 history 模式：非文件请求统一回退 index.html
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}

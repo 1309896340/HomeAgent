@@ -1,0 +1,7 @@
+# 行尾规范：shell 脚本与 nginx 模板必须保持 LF（Dockerfile COPY 进镜像后
+# CRLF 会导致 `#!/bin/sh\r` 执行失败），Windows 下也不随 autocrlf 转换
+* text=auto
+*.sh text eol=lf
+*.template text eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf

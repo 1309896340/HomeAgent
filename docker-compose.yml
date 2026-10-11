@@ -1,0 +1,68 @@
+# ============================================================
+# HomeAgent 生产部署编排
+#
+# 使用（服务器上，需先完成一次性准备，见 .github/workflows/deploy.yml 头部注释）：
+#   cp .env.example .env    # 填入 LLM.API_KEY
+#   docker compose up -d --build
+#   浏览器访问 http://<服务器IP>:${HTTP_PORT:-80}
+#
+# 环境变量加载（两层，均自动）：
+#   1. 根目录 .env 由 docker compose 自动读取，用于本文件的 ${VAR:-默认} 插值；
+#   2. 同一份 .env 经 env_file 注入 backend 容器进程（pydantic-settings 读取）。
+#      必需变量（LLM.API_KEY）缺失时，容器入口脚本会立即报错退出，不会带病启动。
+#
+# 语音识别（可选）：cd asr && docker compose up -d（需 NVIDIA GPU），
+# 其映射的宿主机 12301 端口与 ASR.BASE_URL 默认值正好衔接，无需改配置。
+# ============================================================
+
+name: homeagent
+
+services:
+  backend:
+    build:
+      context: .
+      target: web-runtime
+    image: homeagent-backend:local
+    container_name: homeagent-backend
+    # host 网络：LAN 设备发现（配对嗅探 / 端口扫描）依赖真实网卡——
+    # 桥接网络下 detect_network() 只能看到 docker 网桥网段（172.x），扫不到真实设备。
+    # 因此后端直接使用宿主机网络栈；HOST/PORT（默认 127.0.0.1:8000）在 .env 中配置。
+    # 注意：Windows/macOS 的 Docker Desktop 对 host 网络支持受限，本地开发请用 `uv run web`。
+    network_mode: host
+    env_file:
+      - .env
+    volumes:
+      - ./db:/app/db          # SQLite 数据库与上传图片
+      - ./data:/app/data      # 语音输入调试缓存
+      - ./skills:/app/skills  # 运行时技能目录（对话 Agent 技能落在 skills/agent/）
+    restart: unless-stopped
+    healthcheck:
+      # ${PORT:-8000} 由 compose 从 .env 插值；/health 为开放端点，无需登录
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:${PORT:-8000}/health', timeout=3)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  frontend:
+    build:
+      context: .
+      target: web-frontend
+    image: homeagent-frontend:local
+    container_name: homeagent-frontend
+    # 与 backend 同为 host 网络：nginx 反代 127.0.0.1:$PORT 即达后端，
+    # 后端默认只绑 127.0.0.1，不额外暴露到局域网
+    network_mode: host
+    environment:
+      NGINX_PORT: ${HTTP_PORT:-80}
+      BACKEND_PORT: ${PORT:-8000}
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:${HTTP_PORT:-80}/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s

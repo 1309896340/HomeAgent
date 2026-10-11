@@ -1,0 +1,33 @@
+# 控制构建上下文体积：镜像构建只需要 src/ skills/ deploy/ 与打包元数据
+# 运行时数据（db/ data/）由 compose 挂载卷提供，严禁打进镜像
+
+# 版本控制与 IDE / 工具目录
+.git
+.github
+.vscode
+.zcode
+.agents
+openspec
+
+# Python 本地产物
+.venv
+**/__pycache__
+**/*.py[oc]
+*.egg-info
+
+# 前端本地产物（镜像内重新 npm ci + vite build）
+src/web/frontend/node_modules
+src/web/frontend/dist
+
+# 运行时数据与本地配置
+db
+data
+.env
+
+# 语音识别服务（独立 compose 部署，含大体积模型目录，与主镜像无关）
+asr
+
+# 开发辅助
+scripts
+*.code-workspace
+LICENSE
