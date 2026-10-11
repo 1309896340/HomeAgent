@@ -12,8 +12,8 @@
 #
 # 一次性准备 —— GitHub 仓库（Settings → Secrets and variables → Actions）：
 #   Variables:  SSH_HOST(服务器IP/域名)、SSH_USER(登录用户，建议 root 或
-#               docker 组用户)、SSH_PORT(可选，默认 22)、
-#               DEPLOY_DIR(可选，服务器上代码目录，默认 /opt/homeagent)
+#               docker 组用户)、DEPLOY_DIR(服务器上的部署目录，必填)、
+#               SSH_PORT(可选，默认 22)
 #   Secrets:    SSH_KEY(私钥全文，公钥需加入服务器 authorized_keys)
 #
 # 一次性准备 —— 服务器（Linux + Docker）：
@@ -21,7 +21,7 @@
 #   2. 能读取本仓库：私有仓库请配置 Deploy Key
 #      (ssh-keygen 生成 → 公钥加入仓库 Deploy keys → 私钥配进 ~/.ssh)
 #   3. 首次部署前创建环境文件（后续会随部署校验）：
-#        mkdir -p /opt/homeagent && cd /opt/homeagent
+#        mkdir -p <DEPLOY_DIR> && cd <DEPLOY_DIR>
 #        git clone <本仓库> .   # 或等自动部署首次克隆后
 #        cp .env.example .env && vim .env   # 至少填入 LLM.API_KEY
 #      可选端口：.env 里 PORT=后端端口(默认8000)、HTTP_PORT=网站端口(默认80)
@@ -86,13 +86,14 @@ jobs:
     env:
       REPO_URL: ${{ github.server_url }}/${{ github.repository }}.git
       GIT_REF: ${{ github.sha }}
-      DEPLOY_DIR: ${{ vars.DEPLOY_DIR || '/opt/homeagent' }}
+      DEPLOY_DIR: ${{ vars.DEPLOY_DIR }}
     steps:
       - name: 检查部署所需的仓库变量与密钥（一次列全，缺一即停）
         env:
           HAS_SSH_HOST: ${{ vars.SSH_HOST != '' }}
           HAS_SSH_USER: ${{ vars.SSH_USER != '' }}
           HAS_SSH_KEY: ${{ secrets.SSH_KEY != '' }}
+          HAS_DEPLOY_DIR: ${{ vars.DEPLOY_DIR != '' }}
           SSH_PORT: ${{ vars.SSH_PORT || '22' }}
         run: |
           set -euo pipefail
@@ -100,6 +101,7 @@ jobs:
           [ "$HAS_SSH_HOST" = "true" ] || { echo "::error::缺少仓库变量 SSH_HOST（服务器地址）"; ok=0; }
           [ "$HAS_SSH_USER" = "true" ] || { echo "::error::缺少仓库变量 SSH_USER（登录用户）"; ok=0; }
           [ "$HAS_SSH_KEY"  = "true" ] || { echo "::error::缺少仓库密钥 SSH_KEY（私钥全文）"; ok=0; }
+          [ "$HAS_DEPLOY_DIR" = "true" ] || { echo "::error::缺少仓库变量 DEPLOY_DIR（服务器上的部署目录，必填，不设默认值）"; ok=0; }
           [ "$ok" = "1" ] || exit 1
           echo "✓ 变量与密钥齐备，目标 ${{ vars.SSH_USER }}@${{ vars.SSH_HOST }}:${SSH_PORT} 目录=${DEPLOY_DIR}"
 
@@ -110,7 +112,7 @@ jobs:
           port: ${{ vars.SSH_PORT || '22' }}
           username: ${{ vars.SSH_USER }}
           key: ${{ secrets.SSH_KEY }}
-          script_stop: true # 每条命令失败即停，与脚本内 set -e 双保险
+          # 命令级失败即停由脚本内 set -Eeuo pipefail 保证（v1.2.2 已移除 script_stop 参数）
           envs: REPO_URL,GIT_REF,DEPLOY_DIR
           script: |
             set -Eeuo pipefail
