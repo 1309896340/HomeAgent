@@ -177,7 +177,7 @@ onUnmounted(stopPolling)
           :disabled="!hasChecked || registering"
           @click="registerChecked"
         >
-          {{ registering ? '注册中…' : '加入已注册列表' }}
+          {{ registering ? '注册中…' : '加入列表' }}
         </button>
       </div>
     </section>
