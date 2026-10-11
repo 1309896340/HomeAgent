@@ -50,6 +50,24 @@ echo "✓ .env 校验通过，端口：后端 ${BACKEND_PORT} / 网站 ${HTTP_PO
 
 # ---------- 阶段 3/6 构建镜像 ----------
 stage "3/6 构建镜像（backend + frontend）"
+
+# 预拉基础镜像（尽力而为）：BuildKit 在线解析 registry 元数据对网络很敏感，
+# 先用 daemon 的代理/镜像源把基础镜像拉到本地，构建即可命中缓存。
+# 列表需与 Dockerfile 的 FROM / COPY --from 保持同步。
+base_images=(
+  "node:22-alpine"
+  "python:3.12-slim"
+  "nginx:1.27-alpine"
+  "ghcr.io/astral-sh/uv:latest"
+)
+for img in "${base_images[@]}"; do
+  if docker image inspect "$img" >/dev/null 2>&1; then
+    echo "✓ 已缓存：$img"
+  elif ! docker pull "$img"; then
+    echo "⚠ 预拉失败：$img（构建将尝试在线解析；反复失败请检查 daemon 代理 / registry-mirrors）"
+  fi
+done
+
 if ! docker compose build --progress=plain; then
   echo "✗ 服务器上镜像构建失败（上方日志含失败阶段：frontend-build / python-deps / web-runtime / web-frontend）"
   exit 1
