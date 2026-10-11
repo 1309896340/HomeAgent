@@ -16,7 +16,8 @@ WORKDIR /build
 
 # 先只拷贝依赖清单再 npm ci：package.json 不变时该层直接命中缓存
 COPY src/web/frontend/package.json src/web/frontend/package-lock.json ./
-RUN npm ci --no-audit --no-fund
+# npmmirror：构建容器内直连，国内速度远高于 registry.npmjs.org
+RUN npm ci --registry=https://registry.npmmirror.com --no-audit --no-fund
 
 COPY src/web/frontend/ ./
 RUN npm run build \
@@ -34,8 +35,10 @@ RUN uv sync --frozen --no-dev --no-install-project \
 # ---------- 阶段 3：后端运行时（compose target: web-runtime） ----------
 FROM python:3.12-slim AS web-runtime
 
-# nmap 供端口扫描技能使用（缺失会降级为不可用，这里直接装齐）
-RUN apt-get update \
+# nmap 供端口扫描技能使用（缺失会降级为不可用，这里直接装齐）；
+# apt 源切 TUNA：构建容器内直连，国内速度远高于 deb.debian.org
+RUN sed -i 's|http://deb.debian.org|https://mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list.d/debian.sources \
+    && apt-get update \
     && apt-get install -y --no-install-recommends nmap ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 

@@ -115,6 +115,7 @@ jobs:
           username: ${{ vars.SSH_USER }}
           key: ${{ secrets.SSH_KEY }}
           # 命令级失败即停由脚本内 set -Eeuo pipefail 保证（v1.2.2 已移除 script_stop 参数）
+          command_timeout: 30m # drone-ssh 默认 10m，首次构建装依赖会超
           envs: REPO_URL,GIT_REF,DEPLOY_DIR
           script: |
             set -eu
