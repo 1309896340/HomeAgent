@@ -1,0 +1,225 @@
+# ============================================================
+# HomeAgent 自动部署（push 到 main 或手动触发）
+#
+# 流程：
+#   job build  - 在 CI 上完整构建两个镜像（前端 npm build / 后端依赖安装 /
+#                运行时组装），任何构建阶段报错 → 立即失败，流程终止，
+#                绝不带着坏镜像去碰服务器；完整构建日志直接留在 CI 页面。
+#   job deploy - SSH 到服务器分 6 个阶段执行：环境预检 → 同步代码 →
+#                校验 .env → 构建镜像 → 启动服务 → 健康检查；
+#                脚本开启 set -Eeuo pipefail + ERR trap，任一阶段失败
+#                即打印阶段名/行号/退出码并中断，后续阶段绝不执行。
+#
+# 一次性准备 —— GitHub 仓库（Settings → Secrets and variables → Actions）：
+#   Variables:  SSH_HOST(服务器IP/域名)、SSH_USER(登录用户，建议 root 或
+#               docker 组用户)、SSH_PORT(可选，默认 22)、
+#               DEPLOY_DIR(可选，服务器上代码目录，默认 /opt/homeagent)
+#   Secrets:    SSH_PRIVATE_KEY(私钥全文，公钥需加入服务器 authorized_keys)
+#
+# 一次性准备 —— 服务器（Linux + Docker）：
+#   1. 已安装 Docker Engine 与 docker compose v2 插件、git、curl
+#   2. 能读取本仓库：私有仓库请配置 Deploy Key
+#      (ssh-keygen 生成 → 公钥加入仓库 Deploy keys → 私钥配进 ~/.ssh)
+#   3. 首次部署前创建环境文件（后续会随部署校验）：
+#        mkdir -p /opt/homeagent && cd /opt/homeagent
+#        git clone <本仓库> .   # 或等自动部署首次克隆后
+#        cp .env.example .env && vim .env   # 至少填入 LLM.API_KEY
+#      可选端口：.env 里 PORT=后端端口(默认8000)、HTTP_PORT=网站端口(默认80)
+#
+# 语音识别（可选）：服务器上 cd asr && docker compose up -d（需 NVIDIA GPU）
+# ============================================================
+
+name: Deploy
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch: # 支持手动触发（首次部署 / 重新部署）
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false # 部署排队执行，不并行也不中途取消
+
+jobs:
+  build:
+    name: CI 构建预检
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 生成构建用临时 .env（占位密钥，仅保证 compose 能解析）
+        run: |
+          set -euo pipefail
+          grep -v '^LLM\.API_KEY=' .env.example > .env
+          echo 'LLM.API_KEY=ci-dummy-key-build-only' >> .env
+          grep -q '^LLM\.API_KEY=..' .env || {
+            echo "::error::占位 .env 生成失败（未找到 LLM.API_KEY 行）"
+            exit 1
+          }
+          echo "✓ 临时 .env 已生成"
+
+      - name: 校验 docker-compose.yml（语法 + 变量插值 + env_file 存在性）
+        run: |
+          set -euo pipefail
+          if ! docker compose config -q; then
+            echo "::error::docker-compose.yml 校验失败，渲染结果如下："
+            docker compose config
+            exit 1
+          fi
+          echo "✓ compose 配置有效"
+
+      - name: 构建全部镜像（frontend-build → python-deps → runtime/nginx）
+        run: |
+          set -euo pipefail
+          if ! docker compose build --progress=plain; then
+            echo "::error::镜像构建失败——上方日志中标出了失败的构建阶段"
+            exit 1
+          fi
+          echo "✓ 全部镜像构建通过（backend / frontend）"
+
+  deploy:
+    name: SSH 部署到服务器
+    needs: build # 构建预检不通过绝不部署
+    runs-on: ubuntu-latest
+    env:
+      REPO_URL: ${{ github.server_url }}/${{ github.repository }}.git
+      GIT_REF: ${{ github.sha }}
+      DEPLOY_DIR: ${{ vars.DEPLOY_DIR || '/opt/homeagent' }}
+    steps:
+      - name: 检查部署所需的仓库变量与密钥（一次列全，缺一即停）
+        env:
+          HAS_SSH_HOST: ${{ vars.SSH_HOST != '' }}
+          HAS_SSH_USER: ${{ vars.SSH_USER != '' }}
+          HAS_SSH_KEY: ${{ secrets.SSH_PRIVATE_KEY != '' }}
+          SSH_PORT: ${{ vars.SSH_PORT || '22' }}
+        run: |
+          set -euo pipefail
+          ok=1
+          [ "$HAS_SSH_HOST" = "true" ] || { echo "::error::缺少仓库变量 SSH_HOST（服务器地址）"; ok=0; }
+          [ "$HAS_SSH_USER" = "true" ] || { echo "::error::缺少仓库变量 SSH_USER（登录用户）"; ok=0; }
+          [ "$HAS_SSH_KEY"  = "true" ] || { echo "::error::缺少仓库密钥 SSH_PRIVATE_KEY（私钥全文）"; ok=0; }
+          [ "$ok" = "1" ] || exit 1
+          echo "✓ 变量与密钥齐备，目标 ${{ vars.SSH_USER }}@${{ vars.SSH_HOST }}:${SSH_PORT} 目录=${DEPLOY_DIR}"
+
+      - name: 远程分阶段部署（任一阶段失败立即中断并输出报错）
+        uses: appleboy/ssh-action@v1.2.2
+        with:
+          host: ${{ vars.SSH_HOST }}
+          port: ${{ vars.SSH_PORT || '22' }}
+          username: ${{ vars.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script_stop: true # 每条命令失败即停，与脚本内 set -e 双保险
+          envs: REPO_URL,GIT_REF,DEPLOY_DIR
+          script: |
+            set -Eeuo pipefail
+            trap 'echo ""; echo "✗✗ 部署失败：命令 [${BASH_COMMAND}] 在第 ${LINENO} 行非零退出，已终止后续阶段"; exit 1' ERR
+
+            stage() { echo ""; echo "========== ▶ $1 =========="; }
+
+            # ---------- 阶段 1/6 环境预检 ----------
+            stage "1/6 环境预检"
+            [ -n "${REPO_URL:-}" ] && [ -n "${GIT_REF:-}" ] && [ -n "${DEPLOY_DIR:-}" ] || {
+              echo "✗ 部署参数未传入（REPO_URL / GIT_REF / DEPLOY_DIR）"; exit 1; }
+            for cmd in git docker curl; do
+              command -v $cmd >/dev/null || { echo "✗ 服务器未安装 $cmd"; exit 1; }
+            done
+            docker compose version >/dev/null 2>&1 || {
+              echo "✗ 服务器缺少 docker compose v2 插件"; exit 1; }
+            echo "✓ git / docker / $(docker compose version --short) / curl 均可用"
+
+            # ---------- 阶段 2/6 同步代码 ----------
+            stage "2/6 同步代码 → ${DEPLOY_DIR} @ ${GIT_REF:0:8}"
+            if [ -d "${DEPLOY_DIR}/.git" ]; then
+              if ! git -C "${DEPLOY_DIR}" fetch origin "${GIT_REF}" 2>/dev/null; then
+                echo "⚠ 按 SHA 精确 fetch 失败，回退为全量 fetch origin（目标不变）"
+                git -C "${DEPLOY_DIR}" fetch origin
+              fi
+              git -C "${DEPLOY_DIR}" reset --hard "${GIT_REF}"
+            else
+              echo "首次部署：克隆 ${REPO_URL}"
+              git clone "${REPO_URL}" "${DEPLOY_DIR}"
+              git -C "${DEPLOY_DIR}" fetch origin "${GIT_REF}" 2>/dev/null || \
+                git -C "${DEPLOY_DIR}" fetch origin
+              git -C "${DEPLOY_DIR}" reset --hard "${GIT_REF}"
+            fi
+            echo "✓ 代码已同步到 $(git -C "${DEPLOY_DIR}" rev-parse --short HEAD)"
+
+            # ---------- 阶段 3/6 校验 .env ----------
+            stage "3/6 校验 .env（缺失环境变量在此拦截）"
+            cd "${DEPLOY_DIR}"
+            [ -f .env ] || {
+              echo "✗ 缺少 ${DEPLOY_DIR}/.env —— 请先执行："
+              echo "    cp .env.example .env && vim .env   # 至少填入 LLM.API_KEY"
+              exit 1; }
+            grep -Eq '^LLM\.API_KEY=.+' .env || {
+              echo "✗ .env 中 LLM.API_KEY 为空 —— 请编辑 ${DEPLOY_DIR}/.env 填入后重试"
+              exit 1; }
+            echo "✓ .env 存在且 LLM.API_KEY 已填写"
+
+            # 从 .env 读取端口（与 docker-compose.yml 的插值规则一致）
+            BACKEND_PORT="$(grep -E '^PORT=' .env | tail -1 | cut -d= -f2- | tr -d '[:space:]')"
+            BACKEND_PORT="${BACKEND_PORT:-8000}"
+            HTTP_PORT="$(grep -E '^HTTP_PORT=' .env | tail -1 | cut -d= -f2- | tr -d '[:space:]')"
+            HTTP_PORT="${HTTP_PORT:-80}"
+            echo "✓ 端口：后端 ${BACKEND_PORT} / 网站 ${HTTP_PORT}"
+
+            # ---------- 阶段 4/6 构建镜像 ----------
+            stage "4/6 构建镜像（backend + frontend）"
+            if ! docker compose build --progress=plain; then
+              echo "✗ 服务器上镜像构建失败（上方日志含失败阶段：frontend-build / python-deps / web-runtime / web-frontend）"
+              exit 1
+            fi
+            echo "✓ 镜像构建完成"
+
+            # ---------- 阶段 5/6 启动服务 ----------
+            stage "5/6 启动服务"
+            if ! docker compose up -d --remove-orphans; then
+              echo "✗ 服务启动失败，当前容器状态："
+              docker compose ps -a || true
+              exit 1
+            fi
+            echo "✓ 容器已拉起，等待健康检查"
+
+            # ---------- 阶段 6/6 健康检查 ----------
+            stage "6/6 健康检查"
+            backend_ok=""
+            for i in $(seq 1 30); do
+              if curl -fsS --max-time 3 "http://127.0.0.1:${BACKEND_PORT}/health" 2>/dev/null | grep -q '"ok"'; then
+                backend_ok=1; break
+              fi
+              echo "  等待后端就绪... (${i}/30)"
+              sleep 2
+            done
+            if [ -z "$backend_ok" ]; then
+              echo "✗ 后端健康检查超时（60s），最近日志："
+              docker compose logs --tail=80 backend || true
+              exit 1
+            fi
+            echo "✓ 后端健康 http://127.0.0.1:${BACKEND_PORT}/health"
+
+            frontend_ok=""
+            for i in $(seq 1 15); do
+              if curl -fsS --max-time 3 -o /dev/null "http://127.0.0.1:${HTTP_PORT}/" 2>/dev/null; then
+                frontend_ok=1; break
+              fi
+              echo "  等待前端就绪... (${i}/15)"
+              sleep 2
+            done
+            if [ -z "$frontend_ok" ]; then
+              echo "✗ 前端健康检查超时（30s），最近日志："
+              docker compose logs --tail=80 frontend || true
+              exit 1
+            fi
+            echo "✓ 前端健康 http://127.0.0.1:${HTTP_PORT}/"
+
+            echo ""
+            docker compose ps
+            echo "============================================================"
+            echo "✅ 部署成功：http://<服务器IP>:${HTTP_PORT}/"
+            echo "   部署版本：$(git rev-parse --short HEAD) (${GIT_REF:0:8})"
+            echo "============================================================"
+
+            # 收尾清理悬空镜像：失败只提示，不影响本次部署结果
+            docker image prune -f >/dev/null 2>&1 || echo "⚠ 悬空镜像清理失败（不影响部署）"
