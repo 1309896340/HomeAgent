@@ -47,3 +47,33 @@ flowchart TD
   1. **shell 会静默丢弃点分环境变量**——容器入口必须用 Python exec 形式（`deploy/entrypoint.py`）
   2. **管道会吞退出码**——一切自动化脚本加 `set -Eeuo pipefail`，绝不静默继续
   3. **Tailscale MagicDNS 会接管系统 DNS**——排查解析问题时先看 `/etc/resolv.conf` 是不是被谁改了
+
+---
+
+## 下半场问题树：服务器构建收敛（同日晚）
+
+上半场部署成功后，服务器端构建暴露出一串「每修一个、重跑、撞出下一个」的问题——
+共同主题：**构建的每一个外网依赖（frontend 解析镜像、基础镜像、容器内包管理）都是独立卡点**。
+
+```mermaid
+flowchart TD
+    R["🎯 最后一公里：让服务器构建稳定跑完"]
+    R --> P1["❌ P1 构建第一跳失败：拉取 docker/dockerfile:1 前端镜像超时"]
+    P1 -->|"子问题① registry 被 DNS 污染"| P1a["registry-1.docker.io 解析到 Facebook IPv6<br/>解决：dockerd systemd drop-in 配代理"]
+    P1a --> P1b["❌ 子问题② 配了代理仍失败<br/>authorize DeadlineExceeded"]
+    P1b -->|"定位：# syntax= 强制从 Hub 拉外部 frontend"| P1r["解决：删 syntax 指令，用 Docker 29 内置 frontend"]
+    P1r --> P2["❌ P2 基础镜像元数据解析仍超时"]
+    P2 -->|"根因：BuildKit 经代理解析 Docker Hub 元数据不稳"| P2r["解决：脚本加基础镜像尽力预拉<br/>+ daemon.json registry-mirrors 直连 DaoCloud"]
+    P2r --> P3["❌ P3 Run Command Timeout"]
+    P3 -->|"根因：drone-ssh 默认 10 分钟超时<br/>首次构建总时长超限"| P3r["解决：command_timeout 放宽到 30m"]
+    P3r --> P4["⚠️ P4 容器内下载依赖慢（直连海外源）"]
+    P4 -->|"npm 切 npmmirror / apt 切 TUNA；uv 不换源：--frozen 锁文件绑定 pypi"| OK["🏁 全流程通过 + 服务器端实测验证<br/>双容器 healthy / nginx 反代 / SPA 全 200"]
+```
+
+### 下半场教训
+
+4. **构建的外网依赖要逐层消除**：`# syntax=` frontend 镜像、基础镜像、容器内的 npm/pypi/apt 是三层独立的卡点，每层都要么有镜像源、要么有缓存兜底
+5. **drone-ssh 默认 `command_timeout` 只有 10 分钟**——远程脚本做完整构建时必改
+6. **uv `--frozen` 锁文件绑定了 registry URL**——换镜像源会导致锁校验失败，不能想当然地把 pip 换源经验照搬过去
+7. **部署机不需要 node/npm**——前端构建全部发生在构建镜像内部；在宿主机 `apt install npm` 是徒劳的
+
