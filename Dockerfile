@@ -1,10 +1,13 @@
-# syntax=docker/dockerfile:1
 # ============================================================
 # HomeAgent 多阶段构建（docker compose 会按 target 分别取用）：
 #   frontend-build : Vue3 + Vite 产出静态文件
 #   python-deps    : uv 按 uv.lock 精确安装后端依赖（仅依赖层，缓存友好）
 #   web-runtime    → 后端镜像（compose service: backend）
 #   web-frontend   → nginx 镜像（compose service: frontend，静态 + /api 反代）
+#
+# 刻意不带 # syntax= 指令：那会让 BuildKit 先从 Docker Hub 拉取外部
+# frontend 镜像，是构建的第一跳外网依赖；用 Docker 29 内置 frontend 即可，
+# 服务器在外网不稳的环境下少一层卡点。
 # ============================================================
 
 # ---------- 阶段 1：前端构建 ----------
